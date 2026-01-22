@@ -1,3 +1,17 @@
+require('dotenv').config();
+const express = require('express');
+const axios = require('axios');
+
+const app = express(); // ← ESTA LÍNEA DEBE IR ANTES DE USAR `app`
+
+const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
+const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN;
+
 app.post('/webhook-kommo', async (req, res) => {
   try {
     console.log('📩 Webhook recibido de Kommo:\n', JSON.stringify(req.body, null, 2));
@@ -8,7 +22,6 @@ app.post('/webhook-kommo', async (req, res) => {
       return res.status(400).json({ error: 'Missing message or chat_id' });
     }
 
-    // Enviar mensaje a OpenAI
     const openaiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: "gpt-3.5-turbo",
       messages: [{ role: "user", content: message }]
@@ -21,7 +34,6 @@ app.post('/webhook-kommo', async (req, res) => {
 
     const reply = openaiResponse.data.choices[0].message.content.trim();
 
-    // Enviar respuesta a Kommo
     await axios.post(`https://${KOMMO_SUBDOMAIN}.kommo.com/api/v4/chats/messages`, {
       chat_id: chat_id,
       message: reply
@@ -37,4 +49,12 @@ app.post('/webhook-kommo', async (req, res) => {
     console.error('Error:', err?.response?.data || err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+app.get('/', (req, res) => {
+  res.send('Kommo + OpenAI chatbot is running.');
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
 });
