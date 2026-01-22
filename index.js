@@ -1,18 +1,7 @@
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(express.json());
-
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
-const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN;
-
 app.post('/webhook-kommo', async (req, res) => {
   try {
+    console.log('📩 Webhook recibido de Kommo:\n', JSON.stringify(req.body, null, 2));
+
     const { message, chat_id } = req.body;
 
     if (!message || !chat_id) {
@@ -48,12 +37,4 @@ app.post('/webhook-kommo', async (req, res) => {
     console.error('Error:', err?.response?.data || err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
-});
-
-app.get('/', (req, res) => {
-  res.send('Kommo + OpenAI chatbot is running.');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
 });
