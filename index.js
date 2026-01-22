@@ -7,6 +7,7 @@ const app = express(); // ← ESTA LÍNEA DEBE IR ANTES DE USAR `app`
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
