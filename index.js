@@ -21,38 +21,79 @@ console.log('¡Hola, mundo!');
 console.log('API Key de OpenAI:', openaiApiKey);
 console.log('API Key de Kommo:', kommoApiToken);
 
-// Función para obtener respuesta de OpenAI
-const obtenerRespuestaChatGPT = async (mensaje) => {
+// URL para obtener todos los contactos (leads) de Kommo
+const urlContactos = `https://dxzwuwtc.kommo.com/api/v4/contacts`;
+
+// Obtener todos los contactos de Kommo
+const obtenerContactosDeKommo = async () => {
   try {
-    const response = await openai.Completion.create({
-      model: "gpt-4",
-      prompt: mensaje,
-      max_tokens: 150
+    const response = await axios.get(urlContactos, {
+      headers: {
+        'Authorization': `Bearer ${kommoApiToken}`  // Usamos el token de API de Kommo en los encabezados
+      }
     });
-    console.log('Respuesta de ChatGPT:', response.choices[0].text.trim());
+
+    const contactos = response.data._embedded.contacts;  // Los contactos estarán en esta parte de la respuesta
+    console.log('Contactos obtenidos:', contactos);
+
+    // Enviar un mensaje a cada contacto
+    contactos.forEach(contacto => {
+      const contactoId = contacto.id;  // Obtenemos el ID del contacto
+      responderConIA(contactoId);
+    });
+
   } catch (error) {
-    console.error('Error al obtener respuesta de OpenAI:', error);
+    console.error('Error al obtener contactos de Kommo:', error);
   }
 };
 
-// Enviar mensaje a Kommo
-const enviarMensajeAKommo = async (mensaje) => {
-  const url = 'https://{subdominio}.kommo.com/api/v4/messages'; // Reemplaza con tu subdominio de Kommo
+// Función para interactuar con OpenAI (ChatGPT)
+const obtenerRespuestaChatGPT = async (mensaje) => {
   try {
-    const response = await axios.post(url, {
+    const response = await openai.Completion.create({
+      model: "gpt-4", // Usamos el modelo GPT-4
+      prompt: mensaje,
+      max_tokens: 150
+    });
+
+    // Regresamos la respuesta de ChatGPT
+    return response.choices[0].text.trim();
+  } catch (error) {
+    console.error('Error al obtener respuesta de OpenAI:', error);
+    return 'Lo siento, hubo un error al generar la respuesta.';
+  }
+};
+
+// Función para enviar el mensaje a Kommo
+const enviarMensajeAKommo = async (contactoId, mensaje) => {
+  const urlMensajes = `https://dxzwuwtc.kommo.com/api/v4/messages`;
+
+  try {
+    const response = await axios.post(urlMensajes, {
       message: mensaje,
-      contact: 'id_del_contacto', // Aquí debes poner el ID del contacto de Kommo al que quieres enviar el mensaje
+      contact: contactoId,  // Usamos el ID del contacto para enviar el mensaje
     }, {
       headers: {
         'Authorization': `Bearer ${kommoApiToken}`
       }
     });
-    console.log('Mensaje enviado a Kommo:', response.data);
+
+    console.log(`Mensaje enviado a contacto ${contactoId}:`, response.data);
   } catch (error) {
-    console.error('Error al enviar mensaje a Kommo:', error);
+    console.error(`Error al enviar mensaje al contacto ${contactoId}:`, error);
   }
 };
 
-// Prueba las funciones
-obtenerRespuestaChatGPT('Hola, ¿cómo estás?');
-enviarMensajeAKommo('Hola desde mi aplicación que usa OpenAI y Kommo!');
+// Función para responder a un cliente usando OpenAI y luego enviar el mensaje a Kommo
+const responderConIA = async (contactoId) => {
+  const mensajeDeEntrada = 'Hola, ¿en qué puedo ayudarte?';  // Este sería el mensaje de entrada para interactuar con el cliente
+
+  // Obtener la respuesta de la IA (OpenAI)
+  const respuestaIA = await obtenerRespuestaChatGPT(mensajeDeEntrada);
+
+  // Enviar la respuesta generada a Kommo para el contacto
+  await enviarMensajeAKommo(contactoId, respuestaIA);
+};
+
+// Llamar a la función para obtener los contactos y enviar respuestas con IA
+obtenerContactosDeKommo();
