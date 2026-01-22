@@ -2,8 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 
-const app = express(); // ← ESTA LÍNEA DEBE IR ANTES DE USAR `app`
-
+const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
@@ -15,17 +14,22 @@ const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN;
 
 app.post('/webhook-kommo', async (req, res) => {
   try {
-    console.log('📩 Webhook recibido de Kommo:\n', JSON.stringify(req.body, null, 2));
+    console.log('📩 Webhook recibido de Kommo:');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
 
-    const { message, chat_id } = req.body;
+    const messageData = req.body.message?.add?.[0];
 
-    if (!message || !chat_id) {
-      return res.status(400).json({ error: 'Missing message or chat_id' });
+    if (!messageData) {
+      return res.status(400).json({ error: 'No se encontró mensaje válido en el webhook' });
     }
 
+    const userMessage = messageData.text;
+    const chatId = messageData.chat_id;
+
+    // Enviar mensaje a OpenAI
     const openaiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: "gpt-3.5-turbo",
-      messages: [{ role: "user", content: message }]
+      model: 'gpt-3.5-turbo',
+      messages: [{ role: 'user', content: userMessage }]
     }, {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -35,8 +39,9 @@ app.post('/webhook-kommo', async (req, res) => {
 
     const reply = openaiResponse.data.choices[0].message.content.trim();
 
+    // Enviar respuesta al chat en Kommo
     await axios.post(`https://${KOMMO_SUBDOMAIN}.kommo.com/api/v4/chats/messages`, {
-      chat_id: chat_id,
+      chat_id: chatId,
       message: reply
     }, {
       headers: {
@@ -47,8 +52,8 @@ app.post('/webhook-kommo', async (req, res) => {
 
     return res.status(200).json({ success: true });
   } catch (err) {
-    console.error('Error:', err?.response?.data || err.message);
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error('❌ Error en webhook:', err?.response?.data || err.message);
+    return res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 
