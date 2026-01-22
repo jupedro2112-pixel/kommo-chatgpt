@@ -2,11 +2,11 @@
   "name": "kommo-chatgpt",
   "version": "1.0.0",
   "main": "index.js",
-"dependencies": {
-  "axios": "^0.21.1",
-  "dotenv": "^10.0.0",
-  "openai": "^3.0.0",
-  "@kommodesarrolladores/api-client-js": "^1.0.0"  // Reemplaza por la versión adecuada
+  "dependencies": {
+    "axios": "^0.21.1",
+    "dotenv": "^10.0.0",
+    "openai": "^3.0.0",
+    "@kommodesarrolladores/api-client-js": "^1.0.0"
   },
   "scripts": {
     "start": "node index.js"
