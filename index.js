@@ -33,7 +33,7 @@ app.post('/webhook-kommo', async (req, res) => {
     const reply = openaiResponse.data.choices[0].message.content.trim();
 
     // Enviar respuesta al chat en Kommo
-    await axios.post(`https://${KOMMO_SUBDOMAIN}.kommo.com/api/v4/chats/messages`, {
+    await axios.post(`https://api.kommo.com/v1/messages`, {
       chat_id: chatId,
       message: reply
     }, {
