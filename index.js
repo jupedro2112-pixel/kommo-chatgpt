@@ -38,6 +38,9 @@ app.post('/webhook-kommo', async (req, res) => {
         'Content-Type': 'application/json'
       }
     });
+    
+    // Verifica la respuesta de OpenAI
+console.log('Respuesta de OpenAI:', openaiResponse.data);
 
     const reply = openaiResponse.data.choices[0].message.content.trim();
 
