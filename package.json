@@ -5,7 +5,8 @@
   "dependencies": {
     "axios": "^0.21.1",
     "dotenv": "^10.0.0",
-    "openai": "^3.0.0"
+    "openai": "^3.0.0",
+    "@api/kommodesarrolladores": "git+https://github.com/kommo-com/api-client-js.git"
   },
   "scripts": {
     "start": "node index.js"
