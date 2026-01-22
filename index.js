@@ -1,72 +1,62 @@
-// Cargar las variables de entorno desde el archivo .env
-require('dotenv').config();
+require("dotenv").config();
 
-// Leer las claves de OpenAI y Kommo desde las variables de entorno
-const openaiApiKey = process.env.OPENAI_API_KEY;
-const kommoApiToken = process.env.KOMMO_API_TOKEN;
+const express = require("express");
+const axios = require("axios");
 
-// Asegurarse de que las claves no estén vacías
-if (!openaiApiKey || !kommoApiToken) {
-  console.error("Error: Las claves de API de OpenAI o Kommo no están configuradas.");
-  process.exit(1); // Detener la ejecución si faltan las claves
+const app = express();
+app.use(express.json({ limit: "2mb" }));
+
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN; // ej: dxzwuwtc
+const KOMMO_API_TOKEN = process.env.KOMMO_API_TOKEN; // token Bearer
+
+// Render te da PORT automáticamente
+const PORT = process.env.PORT || 3000;
+
+function assertEnv(name, value) {
+  if (!value) {
+    console.error(`Falta variable de entorno: ${name}`);
+    process.exit(1);
+  }
 }
 
-const openai = require('openai');
-const axios = require('axios');
-const kommodesarrolladores = require('@api/kommodesarrolladores');
+assertEnv("OPENAI_API_KEY", OPENAI_API_KEY);
+assertEnv("KOMMO_SUBDOMAIN", KOMMO_SUBDOMAIN);
+assertEnv("KOMMO_API_TOKEN", KOMMO_API_TOKEN);
 
-// Autenticación con la API de Kommo
-kommodesarrolladores.auth(kommoApiToken);
+// 1) Ruta para probar en el navegador
+app.get("/", (req, res) => {
+  res.status(200).send("OK: servidor activo ✅");
+});
 
-// Inicializar OpenAI
-openai.apiKey = openaiApiKey;
+// 2) Healthcheck
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
 
-// Mostrar las claves en la consola (puedes eliminar esto después de probar)
-console.log('¡Hola, mundo!');
-console.log('API Key de OpenAI:', openaiApiKey);
-console.log('API Key de Kommo:', kommoApiToken);
-
-// Función para obtener respuesta de OpenAI
-const obtenerRespuestaChatGPT = async (mensaje) => {
+// 3) Webhook de Kommo (Kommo te va a pegar acá)
+app.post("/kommo-webhook", async (req, res) => {
   try {
-    const response = await openai.Completion.create({
-      model: "gpt-4",
-      prompt: mensaje,
-      max_tokens: 150
-    });
-    console.log('Respuesta de ChatGPT:', response.choices[0].text.trim());
-    return response.choices[0].text.trim(); // Retornar la respuesta para enviarla a Kommo
-  } catch (error) {
-    console.error('Error al obtener respuesta de OpenAI:', error);
-    return "Lo siento, hubo un error al generar la respuesta.";
+    // IMPORTANTE:
+    // El formato exacto del webhook depende de cómo lo configures en Kommo.
+    // Por ahora lo dejamos "genérico" para que NO crashee.
+    console.log("Webhook recibido de Kommo:", JSON.stringify(req.body).slice(0, 800));
+
+    // Respondemos 200 rápido para que Kommo no reintente
+    res.status(200).json({ received: true });
+
+    // -----
+    // En el próximo paso, cuando me pegues un ejemplo real del payload del webhook,
+    // acá mismo sacamos: texto del mensaje, chat_id/conversación y respondemos con OpenAI.
+    // -----
+
+  } catch (err) {
+    console.error("Error en /kommo-webhook:", err?.message || err);
+    // Igual respondemos 200 para que Kommo no te bombardee
+    res.status(200).json({ received: true, error: true });
   }
-};
+});
 
-// Función para enviar el mensaje a Kommo
-const enviarMensajeAKommo = async (mensaje) => {
-  try {
-    // Obtener la lista de contactos de Kommo
-    const { data } = await kommodesarrolladores.listaDeContactos();
-    
-    if (data && data.length > 0) {
-      const contactoId = data[0].id; // Obtener el ID del primer contacto (puedes personalizar esto)
-      
-      const respuestaChatGPT = await obtenerRespuestaChatGPT(mensaje);
-
-      // Enviar el mensaje a Kommo usando el ID del primer contacto
-      const response = await kommodesarrolladores.enviarMensaje({
-        message: respuestaChatGPT, 
-        contact: contactoId
-      });
-      
-      console.log('Mensaje enviado a Kommo:', response);
-    } else {
-      console.error('No se encontraron contactos en Kommo.');
-    }
-  } catch (error) {
-    console.error('Error al enviar mensaje a Kommo:', error);
-  }
-};
-
-// Prueba las funciones
-enviarMensajeAKommo('Hola desde mi aplicación que usa OpenAI y Kommo!');
+app.listen(PORT, () => {
+  console.log(`Servidor escuchando en puerto ${PORT}`);
+});
