@@ -1,62 +1,59 @@
-require("dotenv").config();
-
-const express = require("express");
-const axios = require("axios");
+require('dotenv').config();
+const express = require('express');
+const axios = require('axios');
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
-
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN; // ej: dxzwuwtc
-const KOMMO_API_TOKEN = process.env.KOMMO_API_TOKEN; // token Bearer
-
-// Render te da PORT automáticamente
 const PORT = process.env.PORT || 3000;
 
-function assertEnv(name, value) {
-  if (!value) {
-    console.error(`Falta variable de entorno: ${name}`);
-    process.exit(1);
-  }
-}
+app.use(express.json());
 
-assertEnv("OPENAI_API_KEY", OPENAI_API_KEY);
-assertEnv("KOMMO_SUBDOMAIN", KOMMO_SUBDOMAIN);
-assertEnv("KOMMO_API_TOKEN", KOMMO_API_TOKEN);
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
+const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN;
 
-// 1) Ruta para probar en el navegador
-app.get("/", (req, res) => {
-  res.status(200).send("OK: servidor activo ✅");
-});
-
-// 2) Healthcheck
-app.get("/health", (req, res) => {
-  res.json({ ok: true });
-});
-
-// 3) Webhook de Kommo (Kommo te va a pegar acá)
-app.post("/kommo-webhook", async (req, res) => {
+app.post('/webhook-kommo', async (req, res) => {
   try {
-    // IMPORTANTE:
-    // El formato exacto del webhook depende de cómo lo configures en Kommo.
-    // Por ahora lo dejamos "genérico" para que NO crashee.
-    console.log("Webhook recibido de Kommo:", JSON.stringify(req.body).slice(0, 800));
+    const { message, chat_id } = req.body;
 
-    // Respondemos 200 rápido para que Kommo no reintente
-    res.status(200).json({ received: true });
+    if (!message || !chat_id) {
+      return res.status(400).json({ error: 'Missing message or chat_id' });
+    }
 
-    // -----
-    // En el próximo paso, cuando me pegues un ejemplo real del payload del webhook,
-    // acá mismo sacamos: texto del mensaje, chat_id/conversación y respondemos con OpenAI.
-    // -----
+    // Enviar mensaje a OpenAI
+    const openaiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: message }]
+    }, {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
 
+    const reply = openaiResponse.data.choices[0].message.content.trim();
+
+    // Enviar respuesta a Kommo
+    await axios.post(`https://${KOMMO_SUBDOMAIN}.kommo.com/api/v4/chats/messages`, {
+      chat_id: chat_id,
+      message: reply
+    }, {
+      headers: {
+        Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    return res.status(200).json({ success: true });
   } catch (err) {
-    console.error("Error en /kommo-webhook:", err?.message || err);
-    // Igual respondemos 200 para que Kommo no te bombardee
-    res.status(200).json({ received: true, error: true });
+    console.error('Error:', err?.response?.data || err.message);
+    return res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+app.get('/', (req, res) => {
+  res.send('Kommo + OpenAI chatbot is running.');
 });
 
 app.listen(PORT, () => {
-  console.log(`Servidor escuchando en puerto ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
