@@ -38,7 +38,15 @@ app.post('/webhook-kommo', async (req, res) => {
         'Content-Type': 'application/json'
       }
     });
-    
+
+    // Verificar la respuesta de OpenAI
+    const reply = openaiResponse.data.choices[0].message.content.trim();
+    console.log('Respuesta procesada de OpenAI:', reply);  // Imprime la respuesta antes de enviarla a Kommo
+
+    if (!reply) {
+      return res.status(400).json({ error: 'No se generó una respuesta válida de OpenAI' });
+    }
+
     // Verifica la respuesta de OpenAI
 console.log('Respuesta de OpenAI:', openaiResponse.data);
 
