@@ -39,19 +39,16 @@ app.post('/webhook-kommo', async (req, res) => {
       }
     });
 
-    // Verificar la respuesta de OpenAI
+    // Verificar respuesta
+    console.log("🧠 Raw OpenAI response:", JSON.stringify(openaiResponse.data, null, 2));
+    console.log("💬 Mensaje completo:", JSON.stringify(openaiResponse.data.choices[0].message, null, 2));
+
     const reply = openaiResponse.data.choices[0].message.content.trim();
-    console.log('Respuesta procesada de OpenAI:', reply);  // Imprime la respuesta antes de enviarla a Kommo
+    console.log('📨 Respuesta generada por ChatGPT:', reply);
 
     if (!reply) {
       return res.status(400).json({ error: 'No se generó una respuesta válida de OpenAI' });
     }
-
-    // Verifica la respuesta de OpenAI
-console.log('Respuesta de OpenAI:', openaiResponse.data);
-    console.log("🧠 choices[0]:", openaiResponse.data.choices[0]);
-
-    const reply = openaiResponse.data.choices[0].message.content.trim();
 
     // Enviar respuesta al chat en Kommo
     await axios.post(`https://api.kommo.com/v1/messages`, {
