@@ -121,10 +121,57 @@ app.post('/webhook-kommo', async (req, res) => {
 
     console.log(`💬 Respuesta generada: ${reply}`);
 
-    // Enviar respuesta a Kommo
-    await sendReply(chatId, reply);
-    return res.status(200).json({ success: true });
+    // Paso 1: Si es la primera vez, preguntar por el usuario
+if (sessionMemory[chatId].step === 'ask_user') {
+  await sendReply(
+    chatId,
+    '👋 Hola! Soy el asistente. Por favor, indícame tu *usuario completo* para calcular tu balance.'
+  );
+  sessionMemory[chatId].step = 'waiting_user';
+  return res.sendStatus(200);
+}
 
+// Paso 2: Procesar el nombre de usuario
+if (sessionMemory[chatId].step === 'waiting_user') {
+  // Leer los datos del Google Sheet
+  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
+  const range = 'Sheet1!A2:D10000';  // Lee hasta la fila 10000
+
+  const rows = await getSheetData(spreadsheetId, range);
+  const totals = calculateTotalsByUser(rows);
+
+  const user = userMessage;
+  const data = totals[user];
+
+  // Si no se encuentra el usuario, pedirlo nuevamente
+  if (!data) {
+    await sendReply(
+      chatId,
+      `❌ No encontré movimientos para el usuario *${user}*. Por favor, verifica que esté bien escrito. ¿Puedes intentar de nuevo?`
+    );
+    return res.sendStatus(200);
+  }
+
+  // Calcular el total neto y determinar el reembolso
+  const net = data.deposits - data.withdrawals;
+
+  if (net <= 1) {
+    await sendReply(
+      chatId,
+      `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`
+    );
+  } else {
+    const bonus = (net * 0.08).toFixed(2);
+    await sendReply(
+      chatId,
+      `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`
+    );
+  }
+
+  delete sessionMemory[chatId];  // Limpiar la sesión después de la interacción
+  return res.sendStatus(200);
+}
+    
   } catch (err) {
     console.error('❌ Error en webhook:', err?.response?.data || err.message);
     return res.status(500).json({ error: 'Error interno del servidor' });
