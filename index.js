@@ -15,7 +15,8 @@ const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN;
 
 const googleCredentials = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
 
-const auth = new google.auth.GoogleAuth({
+const { GoogleAuth } = require('google-auth-library');
+const auth = new GoogleAuth({
   credentials: googleCredentials,
   scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
 });
