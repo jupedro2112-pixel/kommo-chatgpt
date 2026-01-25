@@ -3,6 +3,7 @@ const express = require('express');  // Importar Express
 const axios = require('axios');  // Importar axios
 const { google } = require('googleapis'); // Importar Google APIs
 const { GoogleAuth } = require('google-auth-library'); // Para autenticación de Google
+const OpenAI = require('openai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,6 +15,11 @@ app.use(express.urlencoded({ extended: true }));  // Middleware para datos de fo
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
 const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+
+// ================== OPENAI ==================
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+});
 
 // ================== GOOGLE AUTH ==================
 const auth = new GoogleAuth({
