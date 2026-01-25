@@ -87,17 +87,11 @@ async function sendReply(chatId, message) {
 }
 
 // ================== WEBHOOK ==================
-app.post('/webhook-kommo', async (req, res) => {
-  try {
-    const messageData = req.body.message?.add?.[0];
-    if (!messageData) return res.sendStatus(200);
+app.post('/test-webhook', (req, res) => {
+  console.log('🚨 Test webhook recibido:', req.body);
+  res.sendStatus(200);
+});
 
-    const chatId = messageData.chat_id;
-    const userMessage = messageData.text?.trim();
-
-    if (!sessionMemory[chatId]) {
-      sessionMemory[chatId] = { step: 'ask_user' };
-    }
 
     // ================== STEP 1: ASK USER ==================
     if (sessionMemory[chatId].step === 'ask_user') {
