@@ -60,7 +60,7 @@ function calculateTotalsByUser(rows) {
       totals[user].deposits += amount;
     }
 
-    if (type === 'whitdraw') {
+    if (type === 'withdraw') {
       totals[user].withdrawals += amount;
     }
   });
@@ -85,7 +85,6 @@ async function sendReply(chatId, message) {
 app.post('/webhook-kommo', async (req, res) => {
   try {
     const messageData = req.body.message?.add?.[0];
-
     if (!messageData) {
       return res.status(400).json({ error: 'No se encontró mensaje válido en el webhook' });
     }
@@ -98,78 +97,60 @@ app.post('/webhook-kommo', async (req, res) => {
     // Leer datos desde Google Sheets
     const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // <-- actualizalo si cambia
     const range = 'Sheet1!A2:D10000';
-
     const rows = await getSheetData(spreadsheetId, range);
     const totals = calculateTotalsByUser(rows);
 
     console.log(`📊 Totales calculados: ${JSON.stringify(totals, null, 2)}`);
 
-    const user = userMessage;
-    const data = totals[user];
+    // Verificar si el usuario ya está en la memoria
+    if (!sessionMemory[chatId]) {
+      sessionMemory[chatId] = { step: 'ask_user' };
+    }
 
-    let reply = '';
+    // Paso 1: Preguntar por el usuario si no lo ha enviado
+    if (sessionMemory[chatId].step === 'ask_user') {
+      await sendReply(
+        chatId,
+        '👋 Hola! Soy el asistente. Por favor, indícame tu *usuario completo* para calcular tu balance.'
+      );
+      sessionMemory[chatId].step = 'waiting_user';
+      return res.sendStatus(200);
+    }
 
-    if (!data) {
-      reply = `❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.`;
-    } else {
+    // Paso 2: Procesar el nombre de usuario cuando el bot ya ha preguntado
+    if (sessionMemory[chatId].step === 'waiting_user') {
+      // Buscar el usuario en los datos obtenidos del Google Sheets
+      const data = totals[userMessage];
+
+      // Si el usuario no está en los datos, pida que lo verifique
+      if (!data) {
+        await sendReply(
+          chatId,
+          `❌ No encontré movimientos para el usuario *${userMessage}*. Por favor, verifica que esté bien escrito. ¿Puedes intentar de nuevo?`
+        );
+        return res.sendStatus(200);
+      }
+
+      // Calcular el total neto y determinar el reembolso
       const net = data.deposits - data.withdrawals;
 
       if (net <= 1) {
-        reply = `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`;
+        await sendReply(
+          chatId,
+          `ℹ️ Usuario: *${userMessage}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`
+        );
       } else {
         const bonus = (net * 0.08).toFixed(2);
-        reply = `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`;
+        await sendReply(
+          chatId,
+          `✅ Usuario: *${userMessage}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`
+        );
       }
+
+      // El bot ha procesado la solicitud, eliminar el paso de la memoria
+      delete sessionMemory[chatId];
+      return res.sendStatus(200);
     }
-
-    console.log(`💬 Respuesta generada: ${reply}`);
-
-    // Paso 1: Si es la primera vez, preguntar por el usuario
-if (sessionMemory[chatId].step === 'ask_user') {
-  await sendReply(
-    chatId,
-    '👋 Hola! Soy el asistente. Por favor, indícame tu *usuario completo* para calcular tu balance.'
-  );
-  sessionMemory[chatId].step = 'waiting_user';
-  return res.sendStatus(200);
-}
-
-// Paso 2: Procesar el nombre de usuario
-if (sessionMemory[chatId].step === 'waiting_user') {
-  // Leer los datos del Google Sheet
-  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
-  const range = 'Sheet1!A2:D10000';  // Lee hasta la fila 10000
-
-  const rows = await getSheetData(spreadsheetId, range);
-  const totals = calculateTotalsByUser(rows);
-
-  const user = userMessage;
-  const data = totals[user];
-
-  // Si no se encuentra el usuario, pedirlo nuevamente
-  if (!data) {
-    await sendReply(
-      chatId,
-      `❌ No encontré movimientos para el usuario *${user}*. Por favor, verifica que esté bien escrito. ¿Puedes intentar de nuevo?`
-    );
-    return res.sendStatus(200);
-  }
-
-  // Calcular el total neto y determinar el reembolso
-  const net = data.deposits - data.withdrawals;
-
-  if (net <= 1) {
-    await sendReply(
-      chatId,
-      `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`
-    );
-  } else {
-    const bonus = (net * 0.08).toFixed(2);
-    await sendReply(
-      chatId,
-      `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`
-    );
-  }
 
   } catch (err) {
     console.error('❌ Error en webhook:', err?.response?.data || err.message);
