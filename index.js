@@ -51,7 +51,7 @@ app.post('/webhook-kommo', async (req, res) => {
     }
 
     // Enviar respuesta al chat en Kommo
-    await axios.post(`https://api.kommo.com/v1/messages`, {
+    await axios.post(https://api.kommo.com/v1/messages, {
       chat_id: chatId,
       message: reply
     }, {
@@ -70,5 +70,5 @@ app.post('/webhook-kommo', async (req, res) => {
 
 // Inicia el servidor de Express
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
+  console.log(🚀 Servidor escuchando en puerto ${PORT});
 });
