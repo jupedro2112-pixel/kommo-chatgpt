@@ -78,6 +78,50 @@ async function sendReply(chatId, message) {
   });
 }
 
+// ================== GPT INTENT DETECTOR ==================
+async function detectIntent(message) {
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content: `
+Sos un clasificador.
+Decidí si el mensaje es un NOMBRE DE USUARIO o una CHARLA.
+
+Respondé SOLO JSON:
+{ "type": "username" } o { "type": "chat" }
+        `,
+      },
+      { role: 'user', content: message },
+    ],
+  });
+
+  return JSON.parse(completion.choices[0].message.content);
+}
+
+// ================== GPT CHAT RESPONSE ==================
+async function casinoChatResponse(message) {
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.7,
+    messages: [
+      {
+        role: 'system',
+        content: `
+Sos un agente humano de casino online.
+Sos amable, claro, natural.
+Tu objetivo es ayudar y pedir el nombre de usuario sin sonar robot.
+        `,
+      },
+      { role: 'user', content: message },
+    ],
+  });
+
+  return completion.choices[0].message.content;
+}
+
 // ================== WEBHOOK ==================
 app.post('/webhook-kommo', async (req, res) => {
   try {
