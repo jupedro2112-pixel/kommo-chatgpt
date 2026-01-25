@@ -87,21 +87,19 @@ async function sendReply(chatId, message) {
 }
 
 // ================== WEBHOOK ==================
+
 app.post('/test-webhook', async (req, res) => {
-  await sendReply(...); // ✅ ahora sí se puede usar await
-  res.sendStatus(200);
+  const chatId = '123456789'; // Reemplazalo con un chatId válido de Kommo
+  const message = 'Este es un mensaje de prueba desde el webhook ✅';
+
+  try {
+    await sendReply(chatId, message);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Error enviando mensaje de prueba:', err.message);
+    res.sendStatus(500);
+  }
 });
-
-
-    // ================== STEP 1: ASK USER ==================
-    if (sessionMemory[chatId].step === 'ask_user') {
-      await sendReply(
-        chatId,
-        '👋 Hola! Por favor indicame tu *usuario exacto* para calcular tu balance.'
-      );
-      sessionMemory[chatId].step = 'waiting_user';
-      return res.sendStatus(200);
-    }
 
     // ================== STEP 2: PROCESS USER ==================
     if (sessionMemory[chatId].step === 'waiting_user') {
