@@ -59,15 +59,19 @@ function calculateTotalsByUser(rows) {
 }
 
 // Webhook de Kommo
+
 app.post('/webhook-kommo', async (req, res) => {
   try {
-    const messageData = req.body.message?.add?.[0];
+    console.log('📩 Webhook recibido de Kommo:');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+
+    const messageData = req.body.message?.add?.[0];  // Obtenemos el primer mensaje
 
     if (!messageData) {
       return res.status(400).json({ error: 'No se encontró mensaje válido en el webhook' });
     }
 
-    const userMessage = messageData.text.trim();
+    const userMessage = messageData.text;
     const chatId = messageData.chat_id;
 
     // Leer datos desde Google Sheets
