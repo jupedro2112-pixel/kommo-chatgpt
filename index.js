@@ -79,7 +79,6 @@ async function sendReply(chatId, message) {
 }
 
 // ================== WEBHOOK ==================
-
 app.post('/webhook-kommo', async (req, res) => {
   try {
     const messageData = req.body.message?.add?.[0];
@@ -93,41 +92,36 @@ app.post('/webhook-kommo', async (req, res) => {
 
     console.log(`📩 Recibido mensaje de Kommo del usuario: ${userMessage}`);
 
+    // Leer datos desde Google Sheets
+    const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // <-- actualizalo si cambia
+    const range = 'Sheet1!A2:D10000';
+
+    const rows = await getSheetData(spreadsheetId, range);
+    const totals = calculateTotalsByUser(rows);
+
+    console.log(`📊 Totales calculados: ${JSON.stringify(totals, null, 2)}`);
+
+    const user = userMessage;
+    const data = totals[user];
+
     let reply = '';
 
-    // Si es el primer mensaje, pedir el nombre de usuario
-    if (!messageData.user_message) {
-      reply = "¡Hola! 😊 Para poder ayudarte, ¿me podrías decir tu nombre de usuario?";
+    if (!data) {
+      reply = ❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.;
     } else {
-      // Cuando recibimos el nombre de usuario, procesamos la información
-      const user = userMessage;  // Aquí el nombre de usuario es el mensaje del usuario
-      const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // Actualiza si es necesario
-      const range = 'Sheet1!A2:D10000';
+      const net = data.deposits - data.withdrawals;
 
-      const rows = await getSheetData(spreadsheetId, range);
-      const totals = calculateTotalsByUser(rows);
-
-      console.log(`📊 Totales calculados: ${JSON.stringify(totals, null, 2)}`);
-
-      const data = totals[user];
-
-      if (!data) {
-        reply = `❌ No encontré movimientos para el usuario *${user}*. Por favor verifica que tu nombre esté correctamente escrito.`;
+      if (net <= 1) {
+        reply = ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.;
       } else {
-        const net = data.deposits - data.withdrawals;
-
-        if (net <= 1) {
-          reply = `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`;
-        } else {
-          const bonus = (net * 0.08).toFixed(2);
-          reply = `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`;
-        }
+        const bonus = (net * 0.08).toFixed(2);
+        reply = ✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.;
       }
     }
 
     console.log(`💬 Respuesta generada: ${reply}`);
 
-    // Enviar respuesta a Kommo
+// Enviar respuesta a Kommo
     await sendReply(chatId, reply);
     return res.status(200).json({ success: true });
 
