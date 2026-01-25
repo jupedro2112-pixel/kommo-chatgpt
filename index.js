@@ -1,22 +1,17 @@
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-const { google } = require('googleapis');
-const { GoogleAuth } = require('google-auth-library');
-const { Configuration, OpenAIApi } = require("openai");
+require('dotenv').config();  // Para cargar las variables de entorno
+const express = require('express');  // Importar Express
+const axios = require('axios');  // Importar axios
+const { google } = require('googleapis'); // Importar Google APIs
+const { GoogleAuth } = require('google-auth-library'); // Para autenticación de Google
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Configuración de la API de OpenAI (ChatGPT)
-const openai = new OpenAIApi(new Configuration({
-  apiKey: process.env.OPENAI_API_KEY,
-}));
+app.use(express.json());  // Middleware para procesar JSON
+app.use(express.urlencoded({ extended: true }));  // Middleware para datos de formularios
 
 // ================== ENV ==================
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
 const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
 
@@ -70,9 +65,6 @@ function calculateTotalsByUser(rows) {
   return totals;
 }
 
-// ================== En memoria - Estado de conversación ==================
-const conversationState = {};  // Aquí almacenamos el estado de las conversaciones
-
 // ================== SEND MESSAGE TO KOMMO ==================
 async function sendReply(chatId, message) {
   await axios.post('https://api.kommo.com/v1/messages', {
@@ -80,7 +72,7 @@ async function sendReply(chatId, message) {
     message,
   }, {
     headers: {
-      Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,
+      Authorization: Bearer ${KOMMO_ACCESS_TOKEN},  // Asegúrate de usar comillas invertidas (backticks) aquí
       'Content-Type': 'application/json',
     },
   });
@@ -100,46 +92,38 @@ app.post('/webhook-kommo', async (req, res) => {
 
     console.log(`📩 Recibido mensaje de Kommo del usuario: ${userMessage}`);
 
-    // Buscar el estado de la conversación en memoria
-    if (!conversationState[chatId]) {
-      conversationState[chatId] = { stage: 'waiting_for_username' };
-    }
+    // Leer datos desde Google Sheets
+    const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // <-- actualízalo si cambia
+    const range = 'Sheet1!A2:D10000';
 
-    const userState = conversationState[chatId];
+    const rows = await getSheetData(spreadsheetId, range);
+    const totals = calculateTotalsByUser(rows);
 
-    // Si está esperando el nombre de usuario
-    if (userState.stage === 'waiting_for_username') {
-      await sendReply(chatId, '¡Hola! Soy tu agente de casino virtual. 😊 ¿Cuál es tu nombre de usuario?');
-      userState.stage = 'checking_user';
-      return res.status(200).json({ success: true });
-    }
+    console.log(`📊 Totales calculados: ${JSON.stringify(totals, null, 2)}`);
 
-    // Si está en la etapa de verificación del usuario
-    if (userState.stage === 'checking_user') {
-      // Leer datos desde Google Sheets
-      const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; 
-      const range = 'Sheet1!A2:D10000';
+    const user = userMessage;
+    const data = totals[user];
 
-      const rows = await getSheetData(spreadsheetId, range);
-      const totals = calculateTotalsByUser(rows);
+    let reply = '';
 
-      const data = totals[userMessage];
-
-      if (!data) {
-        // Si no es un usuario válido
-        await sendReply(chatId, `No encontré movimientos para el usuario *${userMessage}*. ¿Seguro que está bien escrito? 🤔`);
-        return res.status(200).json({ success: true });
-      }
-
+    if (!data) {
+      reply = ❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.;
+    } else {
       const net = data.deposits - data.withdrawals;
-      const bonus = (net * 0.08).toFixed(2);
-      await sendReply(chatId, `¡Hola ${userMessage}! 🎉\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n🎁 El *8%* de tu total neto es *${bonus}*.`);
 
-      // Cambiar el estado de la conversación para permitir una nueva interacción
-      userState.stage = 'waiting_for_username';
-
-      return res.status(200).json({ success: true });
+      if (net <= 1) {
+        reply = ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.;
+      } else {
+        const bonus = (net * 0.08).toFixed(2);
+        reply = ✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.;
+      }
     }
+
+    console.log(`💬 Respuesta generada: ${reply}`);
+
+// Enviar respuesta a Kommo
+    await sendReply(chatId, reply);  // Aquí se usa la función sendReply asincrónica
+    return res.status(200).json({ success: true });
 
   } catch (err) {
     console.error('❌ Error en webhook:', err?.response?.data || err.message);
