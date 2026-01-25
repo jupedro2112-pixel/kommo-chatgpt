@@ -13,6 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
 const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN;
 
 // Google Sheets Auth
 const auth = new GoogleAuth({
