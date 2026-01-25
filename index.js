@@ -3,7 +3,6 @@ const express = require('express');  // Importar Express
 const axios = require('axios');  // Importar axios
 const { google } = require('googleapis'); // Importar Google APIs
 const { GoogleAuth } = require('google-auth-library'); // Para autenticación de Google
-const OpenAI = require('openai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
