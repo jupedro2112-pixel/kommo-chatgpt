@@ -171,10 +171,6 @@ if (sessionMemory[chatId].step === 'waiting_user') {
     );
   }
 
-  delete sessionMemory[chatId];  // Limpiar la sesión después de la interacción
-  return res.sendStatus(200);
-}
-    
   } catch (err) {
     console.error('❌ Error en webhook:', err?.response?.data || err.message);
     return res.status(500).json({ error: 'Error interno del servidor' });
