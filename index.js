@@ -65,18 +65,17 @@ function calculateTotalsByUser(rows) {
   return totals;
 }
 
-// ================== SEND MESSAGE TO KOMMO ==================
-async function sendReply(chatId, message) {
-  await axios.post('https://api.kommo.com/v1/messages', {
-    chat_id: chatId,
-    message,
-  }, {
-    headers: {
-      Authorization: Bearer ${KOMMO_ACCESS_TOKEN},
-      'Content-Type': 'application/json',
-    },
-  });
-}
+// Enviar respuesta a Kommo
+await axios.post('https://api.kommo.com/v1/messages', {
+  chat_id: chatId,
+  message: reply,
+}, {
+  headers: {
+    Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,  // Asegúrate de usar comillas invertidas (backticks) aquí
+    'Content-Type': 'application/json',
+  },
+});
+
 
 // ================== WEBHOOK ==================
 app.post('/webhook-kommo', async (req, res) => {
