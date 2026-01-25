@@ -8,7 +8,7 @@
   "dependencies": {
     "googleapis": "^39.2.0",
     "axios": "^1.6.0",
-    "openai": "^3.1.0",  // Esto puede variar según la versión más reciente
+    "openai": "^3.1.0",
     "dotenv": "^16.3.1",
     "express": "^4.18.2"
   },
