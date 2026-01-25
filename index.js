@@ -65,17 +65,18 @@ function calculateTotalsByUser(rows) {
   return totals;
 }
 
-// Enviar respuesta a Kommo
-await axios.post('https://api.kommo.com/v1/messages', {
-  chat_id: chatId,
-  message: reply,
-}, {
-  headers: {
-    Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,  // Asegúrate de usar comillas invertidas (backticks) aquí
-    'Content-Type': 'application/json',
-  },
-});
-
+// ================== SEND MESSAGE TO KOMMO ==================
+async function sendReply(chatId, message) {
+  await axios.post('https://api.kommo.com/v1/messages', {
+    chat_id: chatId,
+    message,
+  }, {
+    headers: {
+      Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,  // Asegúrate de usar comillas invertidas (backticks) aquí
+      'Content-Type': 'application/json',
+    },
+  });
+}
 
 // ================== WEBHOOK ==================
 app.post('/webhook-kommo', async (req, res) => {
@@ -92,7 +93,7 @@ app.post('/webhook-kommo', async (req, res) => {
     console.log(`📩 Recibido mensaje de Kommo del usuario: ${userMessage}`);
 
     // Leer datos desde Google Sheets
-    const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // <-- actualizalo si cambia
+    const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // <-- actualízalo si cambia
     const range = 'Sheet1!A2:D10000';
 
     const rows = await getSheetData(spreadsheetId, range);
@@ -106,22 +107,22 @@ app.post('/webhook-kommo', async (req, res) => {
     let reply = '';
 
     if (!data) {
-      reply = ❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.;
+      reply = `❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.`;
     } else {
       const net = data.deposits - data.withdrawals;
 
       if (net <= 1) {
-        reply = ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.;
+        reply = `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`;
       } else {
         const bonus = (net * 0.08).toFixed(2);
-        reply = ✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.;
+        reply = `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`;
       }
     }
 
     console.log(`💬 Respuesta generada: ${reply}`);
 
-// Enviar respuesta a Kommo
-    await sendReply(chatId, reply);
+    // Enviar respuesta a Kommo
+    await sendReply(chatId, reply);  // Aquí se usa la función sendReply asincrónica
     return res.status(200).json({ success: true });
 
   } catch (err) {
