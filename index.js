@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const { google } = require('googleapis');
+const { GoogleAuth } = require('google-auth-library');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,18 +10,21 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ================== ENV ==================
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
-const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN;
+const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
 
-const googleCredentials = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
-
-const { GoogleAuth } = require('google-auth-library');
+// ================== GOOGLE AUTH ==================
 const auth = new GoogleAuth({
-  credentials: googleCredentials,
+  credentials: GOOGLE_CREDENTIALS,
   scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
 });
 
+// ================== SESSION MEMORY ==================
+const sessionMemory = {};
+
+// ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
   try {
     const authClient = await auth.getClient();
@@ -31,85 +35,126 @@ async function getSheetData(spreadsheetId, range) {
       range,
     });
 
-    const rows = res.data.values;
-    console.log('📄 Datos de Google Sheets:', rows);
-    return rows;
+    return res.data.values || [];
   } catch (error) {
     console.error('❌ Error leyendo Google Sheets:', error.message);
     return [];
   }
 }
 
+// ================== CALCULOS ==================
+function calculateTotalsByUser(rows) {
+  const totals = {};
+
+  rows.forEach(row => {
+    const type = (row[0] || '').toLowerCase(); // deposit / withdraw
+    const user = (row[1] || '').trim();
+    const amount = parseFloat(row[2]) || 0;
+
+    if (!user) return;
+
+    if (!totals[user]) {
+      totals[user] = { deposits: 0, withdrawals: 0 };
+    }
+
+    if (type === 'deposit') {
+      totals[user].deposits += amount;
+    }
+
+    if (type === 'withdraw') {
+      totals[user].withdrawals += amount;
+    }
+  });
+
+  return totals;
+}
+
+// ================== SEND MESSAGE TO KOMMO ==================
+async function sendReply(chatId, message) {
+  await axios.post(
+    'https://api.kommo.com/v1/messages',
+    {
+      chat_id: chatId,
+      message,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+}
+
+// ================== WEBHOOK ==================
 app.post('/webhook-kommo', async (req, res) => {
   try {
-    console.log('📩 Webhook recibido de Kommo:');
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-
     const messageData = req.body.message?.add?.[0];
+    if (!messageData) return res.sendStatus(200);
 
-    if (!messageData) {
-      return res.status(400).json({ error: 'No se encontró mensaje válido en el webhook' });
-    }
-
-    const userMessage = messageData.text;
     const chatId = messageData.chat_id;
+    const userMessage = messageData.text?.trim();
 
-    // OpenAI Request
-    const openaiResponse = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-3.5-turbo',
-        messages: [{ role: 'user', content: userMessage }],
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    console.log('🧠 Raw OpenAI response:', JSON.stringify(openaiResponse.data, null, 2));
-    console.log('💬 Mensaje completo:', JSON.stringify(openaiResponse.data.choices[0].message, null, 2));
-
-    const reply = openaiResponse.data.choices[0].message.content.trim();
-    console.log('📨 Respuesta generada por ChatGPT:', reply);
-
-    if (!reply) {
-      return res.status(400).json({ error: 'No se generó una respuesta válida de OpenAI' });
+    if (!sessionMemory[chatId]) {
+      sessionMemory[chatId] = { step: 'ask_user' };
     }
 
-    // Kommo POST
-    await axios.post(
-      'https://api.kommo.com/v1/messages',
-      {
-        chat_id: chatId,
-        message: reply,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
+    // ================== STEP 1: ASK USER ==================
+    if (sessionMemory[chatId].step === 'ask_user') {
+      await sendReply(
+        chatId,
+        '👋 Hola! Por favor indicame tu *usuario exacto* para calcular tu balance.'
+      );
+      sessionMemory[chatId].step = 'waiting_user';
+      return res.sendStatus(200);
+    }
 
-    return res.status(200).json({ success: true });
+    // ================== STEP 2: PROCESS USER ==================
+    if (sessionMemory[chatId].step === 'waiting_user') {
+      const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
+      const range = 'Sheet1!A2:D10000';
+
+      const rows = await getSheetData(spreadsheetId, range);
+      const totals = calculateTotalsByUser(rows);
+
+      const user = userMessage;
+      const data = totals[user];
+
+      if (!data) {
+        await sendReply(
+          chatId,
+          `❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.`
+        );
+        return res.sendStatus(200);
+      }
+
+      const net = data.deposits - data.withdrawals;
+
+      if (net <= 1) {
+        await sendReply(
+          chatId,
+          `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`
+        );
+      } else {
+        const bonus = (net * 0.08).toFixed(2);
+        await sendReply(
+          chatId,
+          `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`
+        );
+      }
+
+      delete sessionMemory[chatId];
+      return res.sendStatus(200);
+    }
+
+    res.sendStatus(200);
   } catch (err) {
-    console.error('❌ Error en webhook:', err?.response?.data || err.message);
-    return res.status(500).json({ error: 'Error interno del servidor' });
+    console.error('❌ Error webhook:', err.message);
+    res.sendStatus(500);
   }
 });
 
-// Solo para probar lectura de Google Sheets al iniciar
-const testSheet = async () => {
-  const sheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
-  const range = 'Sheet1!A1:B5';
-  await getSheetData(sheetId, range);
-};
-
-testSheet();
-
+// ================== SERVER ==================
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
 });
