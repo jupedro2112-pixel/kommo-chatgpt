@@ -57,15 +57,20 @@ app.post('/webhook-kommo', async (req, res) => {
     const chatId = messageData.chat_id;
 
     // Enviar mensaje a OpenAI
-    const openaiResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-3.5-turbo',
-      messages: [{ role: 'user', content: userMessage }]
-    }, {
-      headers: {
-        Authorization: Bearer ${OPENAI_API_KEY},
-        'Content-Type': 'application/json'
-      }
-    });
+    const openaiResponse = await axios.post(
+  'https://api.openai.com/v1/chat/completions',
+  {
+    model: 'gpt-3.5-turbo',
+    messages: [{ role: 'user', content: userMessage }]
+  },
+  {
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  }
+);
+\\
 
     // Verificar respuesta
     console.log("🧠 Raw OpenAI response:", JSON.stringify(openaiResponse.data, null, 2));
@@ -79,15 +84,19 @@ app.post('/webhook-kommo', async (req, res) => {
     }
 
     // Enviar respuesta al chat en Kommo
-    await axios.post(https://api.kommo.com/v1/messages, {
-      chat_id: chatId,
-      message: reply
-    }, {
-      headers: {
-        Authorization: Bearer ${KOMMO_ACCESS_TOKEN},
-        'Content-Type': 'application/json'
-      }
-    });
+    await axios.post(
+  'https://api.kommo.com/v1/messages',
+  {
+    chat_id: chatId,
+    message: reply
+  },
+  {
+    headers: {
+      Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  }
+);
 
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -107,5 +116,5 @@ testSheet();
 
 // Inicia el servidor de Express
 app.listen(PORT, () => {
-  console.log(🚀 Servidor escuchando en puerto ${PORT});
+  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
 });
