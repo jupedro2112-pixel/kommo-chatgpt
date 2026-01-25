@@ -96,6 +96,15 @@ app.post('/webhook-kommo', async (req, res) => {
   }
 });
 
+const testSheet = async () => {
+  const sheetId = 'TU_SPREADSHEET_ID'; // 👈 Reemplaza con el ID real de la hoja
+  const range = 'Sheet1!A1:B5'; // 👈 Ajusta según tus datos
+  await getSheetData(sheetId, range);
+};
+
+testSheet();
+
+
 // Inicia el servidor de Express
 app.listen(PORT, () => {
   console.log(🚀 Servidor escuchando en puerto ${PORT});
