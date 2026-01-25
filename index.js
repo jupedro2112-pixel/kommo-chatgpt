@@ -88,13 +88,7 @@ async function sendReply(chatId, message) {
 
 // ================== WEBHOOK ==================
 app.post('/test-webhook', async (req, res) => {
-  console.log('🧪 Test webhook recibido:', req.body);
-
-  await sendReply(
-    'TEST_CHAT_ID',
-    'Mensaje de prueba desde /test-webhook'
-  );
-
+  await sendReply(...); // ✅ ahora sí se puede usar await
   res.sendStatus(200);
 });
 
