@@ -2,12 +2,11 @@ require('dotenv').config();  // Para cargar las variables de entorno
 const express = require('express');  // Importar Express
 const axios = require('axios');  // Importar axios
 
-const app = express();  // Aquí estamos creando la instancia de Express
-
+const app = express();  // Crear instancia de Express
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());  // Middleware para procesar JSON en las peticiones
-app.use(express.urlencoded({ extended: true }));  // Middleware para procesar datos de formularios (si es necesario)
+app.use(express.json());  // Middleware para procesar JSON
+app.use(express.urlencoded({ extended: true }));  // Middleware para datos de formularios
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
@@ -34,7 +33,7 @@ app.post('/webhook-kommo', async (req, res) => {
       messages: [{ role: 'user', content: userMessage }]
     }, {
       headers: {
-        Authorization: Bearer ${OPENAI_API_KEY},
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       }
     });
@@ -51,17 +50,18 @@ app.post('/webhook-kommo', async (req, res) => {
     }
 
     // Enviar respuesta al chat en Kommo
-    await axios.post(https://api.kommo.com/v1/messages, {
+    await axios.post('https://api.kommo.com/v1/messages', {
       chat_id: chatId,
       message: reply
     }, {
       headers: {
-        Authorization: Bearer ${KOMMO_ACCESS_TOKEN},
+        Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,
         'Content-Type': 'application/json'
       }
     });
 
     return res.status(200).json({ success: true });
+
   } catch (err) {
     console.error('❌ Error en webhook:', err?.response?.data || err.message);
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -70,5 +70,5 @@ app.post('/webhook-kommo', async (req, res) => {
 
 // Inicia el servidor de Express
 app.listen(PORT, () => {
-  console.log(🚀 Servidor escuchando en puerto ${PORT});
+  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
 });
