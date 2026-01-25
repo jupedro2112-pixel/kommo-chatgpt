@@ -122,56 +122,81 @@ Tu objetivo es ayudar y pedir el nombre de usuario sin sonar robot.
   return completion.choices[0].message.content;
 }
 
+// ================== GPT CHAT RESPONSE ==================
+async function casinoChatResponse(message) {
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.7,
+    messages: [
+      {
+        role: 'system',
+        content: `
+Sos un agente humano de casino online.
+Sos amable, claro, natural.
+Tu objetivo es ayudar y pedir el nombre de usuario sin sonar robot.
+        `,
+      },
+      { role: 'user', content: message },
+    ],
+  });
+
+  return completion.choices[0].message.content;
+}
+
 // ================== WEBHOOK ==================
 app.post('/webhook-kommo', async (req, res) => {
   try {
     const messageData = req.body.message?.add?.[0];
-
-    if (!messageData) {
-      return res.status(400).json({ error: 'No se encontró mensaje válido en el webhook' });
-    }
+    if (!messageData) return res.sendStatus(200);
 
     const userMessage = messageData.text.trim();
     const chatId = messageData.chat_id;
 
-    console.log(`📩 Recibido mensaje de Kommo del usuario: ${userMessage}`);
+    const intent = await detectIntent(userMessage);
 
-    // Leer datos desde Google Sheets
-    const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // <-- actualízalo si cambia
+    // ======= SI ES CHAT =======
+    if (intent.type === 'chat') {
+      const reply = await casinoChatResponse(userMessage);
+      await sendReply(chatId, reply);
+      return res.sendStatus(200);
+    }
+
+    // ======= SI ES POSIBLE USUARIO =======
+    const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
     const range = 'Sheet1!A2:D10000';
 
     const rows = await getSheetData(spreadsheetId, range);
     const totals = calculateTotalsByUser(rows);
 
-    console.log(`📊 Totales calculados: ${JSON.stringify(totals, null, 2)}`);
-
-    const user = userMessage;
-    const data = totals[user];
-
-    let reply = '';
+    const data = totals[userMessage];
 
     if (!data) {
-      reply = `❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.`;
-    } else {
-      const net = data.deposits - data.withdrawals;
-
-      if (net <= 1) {
-        reply = `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`;
-      } else {
-        const bonus = (net * 0.08).toFixed(2);
-        reply = `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`;
-      }
+      await sendReply(
+        chatId,
+        'No logro encontrar ese usuario 🤔 ¿podés revisarlo y enviármelo nuevamente?'
+      );
+      return res.sendStatus(200);
     }
 
-    console.log(`💬 Respuesta generada: ${reply}`);
+    const net = data.deposits - data.withdrawals;
 
-    // Enviar respuesta a Kommo
-    await sendReply(chatId, reply);  // Aquí se usa la función sendReply asincrónica
-    return res.status(200).json({ success: true });
+    if (net <= 1) {
+      await sendReply(
+        chatId,
+        `ℹ️ Perfecto, ya te encontré.\n\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nPor ahora no aplica el 8% 😉`
+      );
+    } else {
+      const bonus = (net * 0.08).toFixed(2);
+      await sendReply(
+        chatId,
+        `🎉 ¡Listo!\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Neto: ${net}\n\n🎁 Tu reembolso es *${bonus}*`
+      );
+    }
 
+    res.sendStatus(200);
   } catch (err) {
-    console.error('❌ Error en webhook:', err?.response?.data || err.message);
-    return res.status(500).json({ error: 'Error interno del servidor' });
+    console.error(err);
+    res.sendStatus(500);
   }
 });
 
