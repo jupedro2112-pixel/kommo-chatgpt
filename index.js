@@ -57,7 +57,7 @@ function calculateTotalsByUser(rows) {
       totals[user].deposits += amount;
     }
 
-    if (type === 'withdraw') {
+    if (type === 'whitdraw') {
       totals[user].withdrawals += amount;
     }
   });
