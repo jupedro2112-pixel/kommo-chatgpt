@@ -15,6 +15,9 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const KOMMO_ACCESS_TOKEN = process.env.KOMMO_ACCESS_TOKEN;
 const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
 
+// Memoria de sesión temporal para manejar pasos de conversación
+const sessionMemory = {};
+
 // ================== GOOGLE AUTH ==================
 const auth = new GoogleAuth({
   credentials: GOOGLE_CREDENTIALS,
