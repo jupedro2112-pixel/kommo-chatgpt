@@ -104,7 +104,7 @@ app.post('/webhook-kommo', async (req, res) => {
 
     // Verificar si el usuario ya está en la memoria
     if (!sessionMemory[chatId]) {
-      sessionMemory[chatId] = { step: 'ask_user' };
+      sessionMemory[chatId] = { step: 'ask_user' }; // Si es la primera vez, preguntar por el nombre de usuario
     }
 
     // Paso 1: Preguntar por el usuario si no lo ha enviado
@@ -113,14 +113,13 @@ app.post('/webhook-kommo', async (req, res) => {
         chatId,
         '👋 Hola! Soy el asistente. Por favor, indícame tu *usuario completo* para calcular tu balance.'
       );
-      sessionMemory[chatId].step = 'waiting_user';
-      return res.sendStatus(200);
+      sessionMemory[chatId].step = 'waiting_user'; // Cambiamos el paso a esperar el usuario
+      return res.sendStatus(200); // Respondemos con un 200 para finalizar este paso
     }
 
     // Paso 2: Procesar el nombre de usuario cuando el bot ya ha preguntado
     if (sessionMemory[chatId].step === 'waiting_user') {
-      // Buscar el usuario en los datos obtenidos del Google Sheets
-      const data = totals[userMessage];
+      const data = totals[userMessage]; // Buscar el usuario en los totales calculados
 
       // Si el usuario no está en los datos, pida que lo verifique
       if (!data) {
