@@ -72,7 +72,7 @@ async function sendReply(chatId, message) {
     message,
   }, {
     headers: {
-      Authorization: Bearer ${KOMMO_ACCESS_TOKEN},  // Asegúrate de usar comillas invertidas (backticks) aquí
+      Authorization: `Bearer ${KOMMO_ACCESS_TOKEN}`,  // Asegúrate de usar comillas invertidas (backticks) aquí
       'Content-Type': 'application/json',
     },
   });
@@ -107,21 +107,21 @@ app.post('/webhook-kommo', async (req, res) => {
     let reply = '';
 
     if (!data) {
-      reply = ❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.;
+      reply = `❌ No encontré movimientos para el usuario *${user}*. Verificá que esté bien escrito.`;
     } else {
       const net = data.deposits - data.withdrawals;
 
       if (net <= 1) {
-        reply = ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.;
+        reply = `ℹ️ Usuario: *${user}*\nDepósitos: ${data.deposits}\nRetiros: ${data.withdrawals}\n\nEl total neto es ${net}. No aplica el 8%.`;
       } else {
         const bonus = (net * 0.08).toFixed(2);
-        reply = ✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.;
+        reply = `✅ Usuario: *${user}*\n\n💰 Depósitos: ${data.deposits}\n💸 Retiros: ${data.withdrawals}\n📊 Total neto: ${net}\n\n🎁 El *8%* de tu total neto es *${bonus}*.`;
       }
     }
 
     console.log(`💬 Respuesta generada: ${reply}`);
 
-// Enviar respuesta a Kommo
+    // Enviar respuesta a Kommo
     await sendReply(chatId, reply);  // Aquí se usa la función sendReply asincrónica
     return res.status(200).json({ success: true });
 
