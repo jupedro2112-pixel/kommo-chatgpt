@@ -87,8 +87,14 @@ async function sendReply(chatId, message) {
 }
 
 // ================== WEBHOOK ==================
-app.post('/test-webhook', (req, res) => {
-  console.log('🚨 Test webhook recibido:', req.body);
+app.post('/test-webhook', async (req, res) => {
+  console.log('🧪 Test webhook recibido:', req.body);
+
+  await sendReply(
+    'TEST_CHAT_ID',
+    'Mensaje de prueba desde /test-webhook'
+  );
+
   res.sendStatus(200);
 });
 
