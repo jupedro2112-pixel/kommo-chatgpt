@@ -1,3 +1,4 @@
+// (Este archivo es tu index.js completo; solo se muestran cambios relevantes en sendReplyToCallbell y llamadas.)
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -8,7 +9,6 @@ const { OpenAIApi, Configuration } = require('openai');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Capture raw body to debug content-types
 app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf && buf.toString(); },
 }));
@@ -19,14 +19,9 @@ app.use(express.urlencoded({
   },
 }));
 
-// Simple in-memory last request for debugging
 let lastRequest = null;
-
-// Dedup map for incoming message UUIDs (to avoid duplicate processing)
-// Stores timestamp; entries older than 5 min are ignored/pruned
 const processedMessages = new Map();
-const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
+const DEDUP_TTL_MS = 5 * 60 * 1000;
 function pruneProcessed() {
   const now = Date.now();
   for (const [k, t] of processedMessages.entries()) {
@@ -35,7 +30,6 @@ function pruneProcessed() {
 }
 setInterval(pruneProcessed, 60 * 1000);
 
-// Logging middleware (most verbose: logs headers, raw body AND parsed body)
 app.use((req, res, next) => {
   const now = new Date().toISOString();
   console.log(`\n[${now}] ${req.method} ${req.originalUrl}`);
@@ -53,11 +47,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health and debug endpoints
 app.get('/', (req, res) => res.send('OK'));
 app.get('/debug/last', (req, res) => res.json(lastRequest || {}));
 
-// ================== ENV ==================
+// ENV
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CALLBELL_API_TOKEN = process.env.CALLBELL_API_TOKEN;
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
@@ -66,12 +59,8 @@ if (!OPENAI_API_KEY) console.error('❌ OPENAI_API_KEY no está definido en las 
 if (!CALLBELL_API_TOKEN) console.error('❌ CALLBELL_API_TOKEN no está definido en las variables de entorno.');
 if (!GOOGLE_CREDENTIALS_JSON) console.warn('⚠️ GOOGLE_CREDENTIALS_JSON no está definido. Sheets solo funcionará si está presente.');
 
-// ================== Inicialización de OpenAI ==================
-const openai = new OpenAIApi(new Configuration({
-  apiKey: OPENAI_API_KEY,
-}));
+const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
 
-// ================== GOOGLE AUTH (con permiso de escritura) ==================
 let GOOGLE_CREDENTIALS = null;
 if (GOOGLE_CREDENTIALS_JSON) {
   try {
@@ -85,7 +74,10 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== GOOGLE SHEETS ==================
+// (Funciones getSheetData, markUserAsClaimed, parseAmount, calculateTotalsByUser, sleep,
+// detectIntent, casinoChatResponse, extractMessageFromBody, extractUsername, etc. 
+// se mantienen iguales a la versión anterior)
+
 async function getSheetData(spreadsheetId, range) {
   try {
     const authClient = await auth.getClient();
@@ -156,11 +148,10 @@ function calculateTotalsByUser(rows) {
   return totals;
 }
 
-// ================== UTIL: sleep para simular demora humana ==================
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ================== SEND MESSAGE TO CALLBELL (espera 5s antes de enviar) ==================
-async function sendReplyToCallbell(conversationId, message) {
+// ---------- MODIFICACIÓN IMPORTANTE: sendReplyToCallbell ahora incluye 'from' y 'content' ----------
+async function sendReplyToCallbell(conversationId, message, fromValue = null) {
   if (!CALLBELL_API_TOKEN) {
     console.warn('⚠️ No hay CALLBELL_API_TOKEN; no se enviará el mensaje.');
     return;
@@ -168,12 +159,24 @@ async function sendReplyToCallbell(conversationId, message) {
   try {
     console.log(`Esperando 5s antes de enviar mensaje a Callbell...`);
     await sleep(5000); // 5 segundos para parecer humano
+
+    // Construimos payload intentando cubrir los formatos que la API puede requerir
     const payload = {
-      conversationId: conversationId,
+      // 'from' puede ser algo como: "livechat|...|..." que viene en el webhook
+      ...(fromValue ? { from: fromValue } : {}),
+      // 'to' suele ser el conversation id (payload.to)
+      ...(conversationId ? { to: conversationId } : {}),
+      // Añadimos campo content requerido por la API
+      content: {
+        type: 'text',
+        text: message,
+      },
+      // Para compatibilidad añadimos también type/text en la raíz
       type: 'text',
       text: message,
     };
-    console.log('Enviando a Callbell ->', payload);
+
+    console.log('Enviando a Callbell ->', JSON.stringify(payload));
     const resp = await axios.post('https://api.callbell.eu/v1/messages/send', payload, {
       headers: {
         Authorization: `Bearer ${CALLBELL_API_TOKEN}`,
@@ -181,12 +184,24 @@ async function sendReplyToCallbell(conversationId, message) {
       },
     });
     console.log('Callbell response status:', resp.status, resp.data ? resp.data : '');
+    // Si la API devuelve errores en resp.data.error, los logueamos
+    if (resp.data && resp.data.error) {
+      console.warn('Callbell API returned error payload:', resp.data.error);
+    }
   } catch (err) {
-    console.error('❌ Error enviando mensaje a Callbell:', err?.response?.data || err.message || err);
+    // Si la API devuelve error con cuerpo JSON lo mostramos completo
+    if (err?.response?.data) {
+      console.error('❌ Error enviando mensaje a Callbell:', JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error('❌ Error enviando mensaje a Callbell:', err?.message || err);
+    }
   }
 }
 
-// ================== GPT INTENT DETECTOR ==================
+// detectIntent, casinoChatResponse, extractMessageFromBody, extractUsername 
+// (idénticas a lo que venías usando; no las repito para evitar redundancia en este bloque, 
+//  pero en tu archivo deben estar incluidas tal como antes)
+
 async function detectIntent(message) {
   try {
     const resp = await openai.createChatCompletion({
@@ -218,7 +233,6 @@ Reglas:
   }
 }
 
-// ================== GPT CHAT RESPONSE ==================
 async function casinoChatResponse(message) {
   try {
     const resp = await openai.createChatCompletion({
@@ -244,7 +258,6 @@ Características importantes:
         { role: 'user', content: message },
       ],
     });
-    // Solo usamos la primera opción y la retornamos (una única respuesta)
     return resp.data?.choices?.[0]?.message?.content || '';
   } catch (err) {
     console.error('❌ casinoChatResponse error:', err?.message || err);
@@ -252,31 +265,26 @@ Características importantes:
   }
 }
 
-// ================== UTIL: extraer texto del body (soporta Callbell y otros) ==================
 function extractMessageFromBody(body, raw) {
   const tryPaths = [
-    () => body?.payload?.text, // Callbell: payload.text
+    () => body?.payload?.text,
     () => body?.message?.add?.[0]?.text,
     () => body?.unsorted?.update?.[0]?.source_data?.data?.[0]?.text,
     () => body?.message?.add?.[0]?.source?.text,
     () => body?.message?.add?.[0]?.text_raw,
   ];
-
   for (const fn of tryPaths) {
     try {
       const v = fn();
       if (v) return String(v).trim();
     } catch (e) { /* ignore */ }
   }
-
   if (raw) {
     try {
-      // try parse as JSON (Callbell sends JSON)
       try {
         const j = JSON.parse(raw);
         if (j?.payload?.text) return String(j.payload.text).trim();
       } catch (e) { /* not JSON */ }
-
       const params = new URLSearchParams(raw);
       for (const [k, v] of params) {
         if (!v) continue;
@@ -289,19 +297,15 @@ function extractMessageFromBody(body, raw) {
       console.warn('extractMessageFromBody: fallo al parsear raw body:', e?.message || e);
     }
   }
-
   return null;
 }
 
-// ================== UTIL: extraer username desde un texto natural ==================
 function extractUsername(message) {
   if (!message || typeof message !== 'string') return null;
   const m = message.trim();
-
   const STOPWORDS = new Set([
     'mi','miembro','usuario','es','soy','me','llamo','nombre','el','la','de','por','favor','porfavor','hola','buenas','buenos','noches','dias','tarde','gracias'
   ]);
-
   const explicitPatterns = [
     /usuario(?:\s+es|\s*:\s*|\s+:+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /mi usuario(?:\s+es|\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
@@ -309,111 +313,89 @@ function extractUsername(message) {
     /username(?:\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /@([A-Za-z0-9._-]{3,30})/i,
   ];
-
   for (const re of explicitPatterns) {
     const found = m.match(re);
     if (found && found[1]) return found[1].trim();
   }
-
   const tokens = m.split(/[\s,;.:\-()]+/).filter(Boolean);
   const tokenCandidates = tokens
     .map(t => t.replace(/^[^A-Za-z0-9@]+|[^A-Za-z0-9._-]+$/g, ''))
     .filter(t => t.length >= 3)
     .filter(t => !STOPWORDS.has(t.toLowerCase()));
-
   for (const t of tokenCandidates) {
     if (/\d/.test(t) && /^[A-Za-z0-9._-]{3,30}$/.test(t)) return t;
   }
-
   for (const t of tokenCandidates) {
     if (/^[A-Za-z0-9._-]{3,30}$/.test(t)) {
       const low = t.toLowerCase();
       if (!STOPWORDS.has(low)) return t;
     }
   }
-
   return null;
 }
 
-// ================== WEBHOOK (soporta Callbell en / y mantiene compatibilidad con rutas antiguas) ==================
+// WEBHOOK handler (similar al anterior, pero pasamos payload.from cuando llamamos sendReplyToCallbell)
 app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
-  // Responder rápido para que el proveedor reciba 200
   res.sendStatus(200);
-
   (async () => {
     try {
-      // Extraer texto del body
       const receivedText = extractMessageFromBody(req.body, req.rawBody);
-
-      // Obtener conversationId (Callbell -> payload.to)
       let conversationId = null;
       try {
         conversationId = req.body?.payload?.to || req.body?.message?.add?.[0]?.chat_id || null;
       } catch (e) { conversationId = null; }
-
-      // Obtener unique uuid del mensaje (Callbell -> payload.uuid)
       let messageUuid = null;
       try {
         messageUuid = req.body?.payload?.uuid || req.body?.payload?.message_id || null;
       } catch (e) { messageUuid = null; }
-
-      // Si no uuid, intentar extraer del raw JSON
       if (!messageUuid && req.rawBody) {
         try {
           const parsed = JSON.parse(req.rawBody);
           messageUuid = parsed?.payload?.uuid || parsed?.payload?.message_id || messageUuid;
         } catch (e) { /* ignore */ }
       }
-
-      // Deduplicate: si ya procesamos este UUID recientemente, ignorar
       if (messageUuid && processedMessages.has(messageUuid)) {
         console.log(`Mensaje UUID ${messageUuid} ya procesado recientemente; se ignora para evitar duplicados.`);
         return;
       }
       if (messageUuid) processedMessages.set(messageUuid, Date.now());
-
       if (!receivedText) {
         console.log('Webhook recibido pero no se encontró texto del usuario. Payload guardado en /debug/last para inspección.');
         return;
       }
-
       console.log('Mensaje recibido ->', receivedText);
       if (conversationId) console.log('Conversation ID detectado ->', conversationId);
       if (messageUuid) console.log('Message UUID ->', messageUuid);
 
-      // Intent detection
+      // Aquí extraemos payload.from para pasarlo a la función de envío
+      const payloadFrom = req.body?.payload?.from || null;
+
       const intent = await detectIntent(receivedText);
       console.log('Intent detectado por OpenAI ->', intent);
-
-      // If chat -> conversational response
       if (intent.type === 'chat') {
         const reply = await casinoChatResponse(receivedText);
         console.log('Respuesta ChatGPT generada (solo una) ->', reply);
-        await sendReplyToCallbell(conversationId, reply);
+        await sendReplyToCallbell(conversationId, reply, payloadFrom);
         return;
       }
 
-      // If username intent -> extract username
       const username = extractUsername(receivedText);
       console.log('Username extraído ->', username);
-
       if (!username) {
         const ask = 'Estimado/a, entiendo que querés que verifique tu usuario. Por favor enviá exactamente tu nombre de usuario tal como figura en la plataforma para que lo confirme en nuestros registros.';
         console.log('No se pudo extraer username; se solicita aclaración ->', ask);
-        await sendReplyToCallbell(conversationId, ask);
+        await sendReplyToCallbell(conversationId, ask, payloadFrom);
         return;
       }
 
       const lookupKey = String(username).toLowerCase().trim();
       console.log('Lookup key (lowercased) ->', lookupKey);
 
-      // Buscar en Google Sheets (incluye columna E)
       const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
       const range = 'Sheet1!A2:E10000';
       const rows = await getSheetData(spreadsheetId, range);
       const totals = calculateTotalsByUser(rows);
 
-      // localizar la fila exacta (para marcar columna E si es necesario)
       let foundRowIndex = -1;
       for (let i = 0; i < rows.length; i++) {
         const rowUser = String(rows[i][1] || '').toLowerCase().trim();
@@ -426,20 +408,18 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       if (foundRowIndex === -1) {
         const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al WhatsApp principal donde realizás tus cargas para solicitar tu nombre de usuario correcto y volvé a este chat con el usuario exacto para que podamos corroborar el reembolso.`;
         console.log('Respuesta enviada (usuario no encontrado) ->', msg);
-        await sendReplyToCallbell(conversationId, msg);
+        await sendReplyToCallbell(conversationId, msg, payloadFrom);
         return;
       }
 
-      // verificar si ya fue reclamado (columna E = index 4)
       const claimedCell = String(rows[foundRowIndex][4] || '').toLowerCase();
       if (claimedCell.includes('reclam')) {
         const msg = `Estimado/a, según nuestros registros el reembolso para ${username} ya fue marcado como reclamado anteriormente. Si creés que hay un error, contactanos por WhatsApp principal con evidencia y lo revisamos.`;
         console.log('Respuesta enviada (ya reclamado) ->', msg);
-        await sendReplyToCallbell(conversationId, msg);
+        await sendReplyToCallbell(conversationId, msg, payloadFrom);
         return;
       }
 
-      // obtener totales y decidir reembolso
       const userTotals = totals[lookupKey] || { deposits: 0, withdrawals: 0 };
       const net = userTotals.deposits - userTotals.withdrawals;
       const depositsStr = Number(userTotals.deposits).toFixed(2);
@@ -449,16 +429,15 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       if (net <= 1) {
         const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi considerás que hay un error, por favor contactanos por WhatsApp principal y traenos el usuario correcto para que lo revisemos.`;
         console.log('Respuesta enviada (no aplica reembolso) ->', msg);
-        await sendReplyToCallbell(conversationId, msg);
+        await sendReplyToCallbell(conversationId, msg, payloadFrom);
         return;
       } else {
         const bonus = (net * 0.08);
         const bonusStr = bonus.toFixed(2);
         const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. El monto de reembolso es: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nEl reembolso se depositará automáticamente en tu cuenta y podrás verificarlo en la plataforma usando tu usuario. Procedo a marcar este reembolso como reclamado en nuestros registros.`;
         console.log('Respuesta enviada (aplica reembolso) ->', msg);
-        await sendReplyToCallbell(conversationId, msg);
+        await sendReplyToCallbell(conversationId, msg, payloadFrom);
 
-        // marcar en Sheets: rowNumber = 2 + foundRowIndex (porque rows comienza en A2)
         const rowNumber = 2 + foundRowIndex;
         const marked = await markUserAsClaimed(spreadsheetId, rowNumber, 'E');
         if (marked) {
@@ -474,7 +453,6 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
   })();
 });
 
-// Inicia el servidor de Express
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
 });
