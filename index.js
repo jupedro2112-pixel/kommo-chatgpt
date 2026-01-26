@@ -1,3 +1,10 @@
+// Servidor webhook + integración Kommo (amojo) + OpenAI + Google Sheets
+// Adaptado para usar SOLO Kommo (amojo) como canal de envío de mensajes desde el backend.
+// Variables de entorno necesarias:
+// - OPENAI_API_KEY
+// - KOMMO_API_TOKEN
+// - (opcional) KOMMO_SCOPE_ID  -> si ya tenés un scope_id fijo y no querés llamar /connect
+// - (opcional) GOOGLE_CREDENTIALS_JSON (si usás Sheets)
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -8,15 +15,13 @@ const { OpenAIApi, Configuration } = require('openai');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Capture raw body
+// Capture raw body (Kommo may send application/x-www-form-urlencoded)
 app.use(express.json({
   verify: (req, res, buf) => { req.rawBody = buf && buf.toString(); },
 }));
 app.use(express.urlencoded({
   extended: true,
-  verify: (req, res, buf) => {
-    req.rawBody = (req.rawBody || '') + (buf && buf.toString());
-  },
+  verify: (req, res, buf) => { req.rawBody = (req.rawBody || '') + (buf && buf.toString()); },
 }));
 
 // Debug / dedupe
@@ -38,14 +43,7 @@ app.use((req, res, next) => {
   console.log('Headers:', req.headers);
   console.log('Raw body:', req.rawBody || '(empty)');
   console.log('Parsed body:', req.body && Object.keys(req.body).length ? req.body : '(empty)');
-  lastRequest = {
-    time: now,
-    method: req.method,
-    url: req.originalUrl,
-    headers: req.headers,
-    body: req.body,
-    rawBody: req.rawBody,
-  };
+  lastRequest = { time: now, method: req.method, url: req.originalUrl, headers: req.headers, body: req.body, rawBody: req.rawBody };
   next();
 });
 
@@ -54,15 +52,14 @@ app.get('/debug/last', (req, res) => res.json(lastRequest || {}));
 
 // ENV
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const CALLBELL_API_TOKEN = process.env.CALLBELL_API_TOKEN;
-const CALLBELL_INTEGRATION_UUID = process.env.CALLBELL_INTEGRATION_UUID || null;
+const KOMMO_API_TOKEN = process.env.KOMMO_API_TOKEN; // required to send messages to Kommo
+const KOMMO_SCOPE_ID = process.env.KOMMO_SCOPE_ID || null; // optional pre-provisioned scope
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
 if (!OPENAI_API_KEY) console.error('❌ OPENAI_API_KEY no está definido en las variables de entorno.');
-if (!CALLBELL_API_TOKEN) console.error('❌ CALLBELL_API_TOKEN no está definido en las variables de entorno.');
+if (!KOMMO_API_TOKEN) console.warn('⚠️ KOMMO_API_TOKEN no está definido. No se podrá enviar mensajes a Kommo hasta setearlo.');
 if (!GOOGLE_CREDENTIALS_JSON) console.warn('⚠️ GOOGLE_CREDENTIALS_JSON no está definido. Sheets solo funcionará si está presente.');
 
-// OpenAI init
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
 
 // Google Auth
@@ -70,12 +67,9 @@ let GOOGLE_CREDENTIALS = null;
 if (GOOGLE_CREDENTIALS_JSON) {
   try { GOOGLE_CREDENTIALS = JSON.parse(GOOGLE_CREDENTIALS_JSON); } catch (e) { console.error('❌ GOOGLE_CREDENTIALS_JSON parse error', e.message); }
 }
-const auth = new GoogleAuth({
-  credentials: GOOGLE_CREDENTIALS,
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-});
+const auth = new GoogleAuth({ credentials: GOOGLE_CREDENTIALS, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
 
-// Google Sheets helpers
+// Google Sheets helpers (unchanged)
 async function getSheetData(spreadsheetId, range) {
   try {
     const authClient = await auth.getClient();
@@ -93,12 +87,7 @@ async function markUserAsClaimed(spreadsheetId, rowNumber, columnLetter = 'E') {
     const sheets = google.sheets({ version: 'v4', auth: authClient });
     const range = `Sheet1!${columnLetter}${rowNumber}`;
     const resource = { values: [['RECLAMADO']] };
-    const res = await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range,
-      valueInputOption: 'RAW',
-      resource,
-    });
+    const res = await sheets.spreadsheets.values.update({ spreadsheetId, range, valueInputOption: 'RAW', resource });
     console.log(`Google Sheets: marcado row ${rowNumber} col ${columnLetter} -> RECLAMADO. Status:`, res.status);
     return true;
   } catch (err) {
@@ -124,114 +113,99 @@ function calculateTotalsByUser(rows) {
     if (!user) return;
     if (!totals[user]) totals[user] = { deposits: 0, withdrawals: 0 };
     if (type.includes('deposit') || type.includes('depósito') || type.includes('deposito')) totals[user].deposits += amount;
-    if (type.includes('withdraw') || type.includes('withdrawal') || type.includes('whitdraw') || type.includes('witdraw') || type.includes('retiro') || type.includes('retiros') || type.includes('retir') || type.includes('withdraws') || type.includes('ret')) totals[user].withdrawals += amount;
+    if (/withdraw|retiro|retir/i.test(type)) totals[user].withdrawals += amount;
   });
   return totals;
 }
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Callbell send with reattempts (tries multiple payload shapes)
-async function sendReplyToCallbell(conversationId, message, rawFromString = null, channelUuid = null, phoneNumber = null) {
-  if (!CALLBELL_API_TOKEN) {
-    console.warn('⚠️ No CALLBELL_API_TOKEN; aborting send.');
+// Kommo (amojo) integration
+// Cache scope_id per channel_id
+const kommoScopeCache = new Map(); // channelId -> scopeId
+
+async function connectKommoChannel(channelId) {
+  if (!KOMMO_API_TOKEN) throw new Error('KOMMO_API_TOKEN not set');
+  if (!channelId) throw new Error('channelId required for connectKommoChannel');
+
+  // If user provided a fixed KOMMO_SCOPE_ID env, prefer it (skip connect)
+  if (KOMMO_SCOPE_ID) {
+    kommoScopeCache.set(channelId, KOMMO_SCOPE_ID);
+    return KOMMO_SCOPE_ID;
+  }
+
+  if (kommoScopeCache.has(channelId)) return kommoScopeCache.get(channelId);
+
+  try {
+    const url = `https://amojo.kommo.com/v2/origin/custom/${encodeURIComponent(channelId)}/connect`;
+    console.log('Kommo: connecting channel ->', channelId);
+    const resp = await axios.post(url, {}, {
+      headers: { Authorization: `Bearer ${KOMMO_API_TOKEN}`, 'Content-Type': 'application/json' },
+      timeout: 15000,
+    });
+    console.log('Kommo connect response status:', resp.status, resp.data ? resp.data : '');
+    const data = resp.data || {};
+    // Extract possible fields that represent the scope id
+    const scopeId = data.scope_id || data.id || data.scope || data.integration_id || data.integrationId || channelId;
+    kommoScopeCache.set(channelId, scopeId);
+    return scopeId;
+  } catch (err) {
+    console.error('❌ Error connecting Kommo channel:', err?.response?.data || err.message || err);
+    throw err;
+  }
+}
+
+async function sendToKommo(scopeIdOrChannelId, conversationId, message) {
+  if (!KOMMO_API_TOKEN) {
+    console.warn('⚠️ KOMMO_API_TOKEN not set; cannot send to Kommo.');
+    return false;
+  }
+  if (!conversationId) {
+    console.warn('No conversationId provided; cannot send message to Kommo.');
     return false;
   }
 
-  // normalize phone
-  const normalizePhone = (p) => { if (!p) return null; const s = String(p).trim(); return s.startsWith('+') ? s : s; };
+  let scopeId = scopeIdOrChannelId || null;
 
-  const phone = normalizePhone(phoneNumber);
-
-  // Build attempts in order:
-  const attempts = [];
-
-  // A: conversationId + raw from string (some accounts expect the raw 'from' string)
-  if (conversationId && rawFromString) {
-    attempts.push({
-      to: conversationId,
-      from: rawFromString,
-      type: 'text',
-      content: { text: message },
-    });
-  }
-
-  // B: conversationId + from object with channelUuid (livechat)
-  if (conversationId && channelUuid) {
-    attempts.push({
-      to: conversationId,
-      from: { type: 'livechat', uuid: channelUuid },
-      type: 'text',
-      content: { text: message },
-    });
-  }
-
-  // C: conversationId only (no from)
-  if (conversationId) {
-    attempts.push({
-      to: conversationId,
-      type: 'text',
-      content: { text: message },
-    });
-  }
-
-  // D: if CALLBELL_INTEGRATION_UUID provided, try with that (integrationId property)
-  if (CALLBELL_INTEGRATION_UUID) {
-    // attempt using integrationId with conversationId
-    if (conversationId) {
-      attempts.push({
-        to: conversationId,
-        from: { type: 'whatsapp', integrationId: CALLBELL_INTEGRATION_UUID },
-        type: 'text',
-        content: { text: message },
-      });
+  try {
+    if (!scopeId && KOMMO_SCOPE_ID) scopeId = KOMMO_SCOPE_ID;
+    if (!scopeId) {
+      // If the caller provided a channel id, attempt to connect and obtain scopeId
+      scopeId = await connectKommoChannel(scopeIdOrChannelId);
+    } else if (!kommoScopeCache.has(scopeIdOrChannelId) && scopeIdOrChannelId) {
+      // ensure cache has mapping
+      kommoScopeCache.set(scopeIdOrChannelId, scopeId);
     }
-    // attempt using phone with integrationId (if phone exists)
-    if (phone) {
-      attempts.push({
-        to: phone,
-        from: { type: 'whatsapp', integrationId: CALLBELL_INTEGRATION_UUID },
-        type: 'text',
-        content: { text: message },
-      });
-    }
+  } catch (e) {
+    console.warn('connectKommoChannel failed; will attempt to use provided id as scopeId if possible.');
+    scopeId = scopeIdOrChannelId || scopeId;
   }
 
-  // Final attempt: to = phone without from
-  if (phone) {
-    attempts.push({
-      to: phone,
-      type: 'text',
-      content: { text: message },
+  if (!scopeId) {
+    console.error('No scopeId available for Kommo send.');
+    return false;
+  }
+
+  const url = `https://amojo.kommo.com/v2/origin/custom/${encodeURIComponent(scopeId)}`;
+  const payload = {
+    conversation_id: conversationId,
+    direction: 'outgoing',
+    author: { type: 'system', id: 'chatgpt-bot' },
+    type: 'text',
+    text: message,
+  };
+
+  try {
+    console.log('Sending to Kommo ->', url, payload);
+    const resp = await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${KOMMO_API_TOKEN}`, 'Content-Type': 'application/json' },
+      timeout: 15000,
     });
+    console.log('Kommo send response status:', resp.status, resp.data ? resp.data : '');
+    return resp.status >= 200 && resp.status < 300;
+  } catch (err) {
+    console.error('❌ Error sending message to Kommo:', err?.response?.data || err.message || err);
+    return false;
   }
-
-  // Wait a human-like delay before first attempt
-  console.log('Esperando 5s antes de enviar a Callbell (human-like) ...');
-  await sleep(5000);
-
-  for (let i = 0; i < attempts.length; i++) {
-    const payload = attempts[i];
-    try {
-      console.log(`Callbell send attempt ${i + 1}/${attempts.length}:`, JSON.stringify(payload));
-      const resp = await axios.post('https://api.callbell.eu/v1/messages/send', payload, {
-        headers: { Authorization: `Bearer ${CALLBELL_API_TOKEN}`, 'Content-Type': 'application/json' },
-        timeout: 15000,
-      });
-      console.log('Callbell response status:', resp.status, resp.data ? resp.data : '');
-      if (resp.status >= 200 && resp.status < 300) return true;
-      if (resp.data && resp.data.error) console.warn('Callbell API returned error payload:', JSON.stringify(resp.data.error));
-    } catch (err) {
-      if (err?.response?.data) {
-        console.error(`Error attempt ${i + 1}:`, JSON.stringify(err.response.data, null, 2));
-      } else {
-        console.error(`Error attempt ${i + 1}:`, err?.message || err);
-      }
-      // continue to next attempt
-    }
-  }
-
-  console.error('Todos los intentos de envío a Callbell fallaron.');
-  return false;
 }
 
 // OpenAI helpers
@@ -253,6 +227,7 @@ async function detectIntent(message) {
     return { type: 'chat' };
   }
 }
+
 async function casinoChatResponse(message) {
   try {
     const resp = await openai.createChatCompletion({
@@ -270,12 +245,14 @@ async function casinoChatResponse(message) {
   }
 }
 
-// Extractors
+// Extractors for Kommo payloads
 function extractMessageFromBody(body, raw) {
   const tryPaths = [
     () => body?.payload?.text,
     () => body?.text,
     () => body?.message?.add?.[0]?.text,
+    () => body?.unsorted?.update?.[0]?.source_data?.data?.[0]?.text,
+    () => body?.unsorted?.update?.[0]?.source_data?.data?.[0]?.message,
   ];
   for (const fn of tryPaths) {
     try { const v = fn(); if (v) return String(v).trim(); } catch (e) {}
@@ -287,11 +264,57 @@ function extractMessageFromBody(body, raw) {
     } catch (e) {}
     try {
       const params = new URLSearchParams(raw);
-      for (const [k, v] of params) { if (!v) continue; const keyLower = k.toLowerCase(); if (keyLower.includes('text')) return decodeURIComponent(String(v)).replace(/\+/g, ' ').trim(); }
+      for (const [k, v] of params) {
+        if (!v) continue;
+        const keyLower = k.toLowerCase();
+        if (keyLower.includes('text') || keyLower.includes('message')) return decodeURIComponent(String(v)).replace(/\+/g, ' ').trim();
+      }
     } catch (e) {}
   }
   return null;
 }
+
+function extractKommoIds(body, raw) {
+  try {
+    const uns0 = body?.unsorted?.update?.[0] || null;
+    let channelId = null;
+    let conversationId = null;
+
+    if (uns0) {
+      if (uns0.source) {
+        const src = String(uns0.source);
+        channelId = src.includes(':') ? src.split(':').pop() : src;
+      }
+      if (!channelId && uns0.source_data && uns0.source_data.to) channelId = uns0.source_data.to;
+      if (uns0.source_data && uns0.source_data.origin && uns0.source_data.origin.chat_id) conversationId = uns0.source_data.origin.chat_id;
+      if (!conversationId && uns0.source_data && uns0.source_data.data && Array.isArray(uns0.source_data.data) && uns0.source_data.data[0] && uns0.source_data.data[0].id) {
+        conversationId = uns0.source_data.data[0].id;
+      }
+    }
+
+    if (!channelId) channelId = body?.payload?.contact?.channel?.uuid || body?.contact?.channel?.uuid || null;
+    if (!conversationId) conversationId = body?.payload?.to || body?.to || body?.payload?.conversation_id || body?.payload?.uuid || null;
+
+    if ((!channelId || !conversationId) && raw) {
+      try {
+        const params = new URLSearchParams(raw);
+        if (!channelId) {
+          const src = params.get('unsorted[update][0][source]') || params.get('source') || params.get('to');
+          if (src) channelId = src.includes(':') ? src.split(':').pop() : src;
+        }
+        if (!conversationId) {
+          const chatId = params.get('unsorted[update][0][source_data][origin][chat_id]') || params.get('conversation_id') || params.get('uuid');
+          if (chatId) conversationId = chatId;
+        }
+      } catch (e) {}
+    }
+
+    return { channelId: channelId || null, conversationId: conversationId || null };
+  } catch (e) {
+    return { channelId: null, conversationId: null };
+  }
+}
+
 function extractUsername(message) {
   if (!message || typeof message !== 'string') return null;
   const m = message.trim();
@@ -303,7 +326,10 @@ function extractUsername(message) {
     /username(?:\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /@([A-Za-z0-9._-]{3,30})/i,
   ];
-  for (const re of explicitPatterns) { const found = m.match(re); if (found && found[1]) return found[1].trim(); }
+  for (const re of explicitPatterns) {
+    const found = m.match(re);
+    if (found && found[1]) return found[1].trim();
+  }
   const tokens = m.split(/[\s,;.:\-()]+/).filter(Boolean);
   const tokenCandidates = tokens.map(t => t.replace(/^[^A-Za-z0-9@]+|[^A-Za-z0-9._-]+$/g, '')).filter(t => t.length >= 3).filter(t => !STOPWORDS.has(t.toLowerCase()));
   for (const t of tokenCandidates) if (/\d/.test(t) && /^[A-Za-z0-9._-]{3,30}$/.test(t)) return t;
@@ -311,19 +337,17 @@ function extractUsername(message) {
   return null;
 }
 
-// Webhook handler
-app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
-  // respond early to provider
+// Webhook handler (Kommo)
+app.post(['/', '/webhook-kommo'], (req, res) => {
+  // respond early
   res.sendStatus(200);
 
   (async () => {
     try {
       const receivedText = extractMessageFromBody(req.body, req.rawBody);
-      // conversationId (payload.to)
-      const conversationId = req.body?.payload?.to || req.body?.to || null;
-      const rawFromString = req.body?.payload?.from || req.body?.from || null;
-      const channelUuid = req.body?.payload?.contact?.channel?.uuid || req.body?.contact?.channel?.uuid || null;
-      const phoneNumber = req.body?.payload?.contact?.phoneNumber || req.body?.contact?.phoneNumber || null;
+      const ids = extractKommoIds(req.body, req.rawBody);
+      const conversationId = ids.conversationId || null;
+      const channelId = ids.channelId || null;
       const messageUuid = req.body?.payload?.uuid || req.body?.uuid || null;
 
       // dedupe
@@ -340,26 +364,27 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
 
       console.log('Mensaje recibido ->', receivedText);
       if (conversationId) console.log('Conversation ID ->', conversationId);
-      if (rawFromString) console.log('rawFromString ->', rawFromString);
-      if (channelUuid) console.log('channelUuid ->', channelUuid);
+      if (channelId) console.log('Channel ID ->', channelId);
 
       const intent = await detectIntent(receivedText);
       console.log('Intent detectado ->', intent);
 
+      // If intent is chat -> generate with OpenAI and send to Kommo
       if (intent.type === 'chat') {
         const reply = await casinoChatResponse(receivedText);
         console.log('Respuesta ChatGPT ->', reply);
-        await sendReplyToCallbell(conversationId, reply, rawFromString, channelUuid, phoneNumber);
+        const sent = await sendToKommo(channelId || KOMMO_SCOPE_ID || conversationId, conversationId, reply);
+        if (!sent) console.warn('No se pudo enviar la respuesta a Kommo (ver logs).');
         return;
       }
 
-      // username flow
+      // Username flow
       const username = extractUsername(receivedText);
       console.log('Username extraído ->', username);
       if (!username) {
         const ask = 'Estimado/a, por favor enviá exactamente tu nombre de usuario tal como figura en la plataforma para que lo confirme en nuestros registros.';
         console.log('Solicitando username ->', ask);
-        await sendReplyToCallbell(conversationId, ask, rawFromString, channelUuid, phoneNumber);
+        await sendToKommo(channelId || KOMMO_SCOPE_ID || conversationId, conversationId, ask);
         return;
       }
 
@@ -378,17 +403,17 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       }
 
       if (foundRowIndex === -1) {
-        const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al WhatsApp principal donde realizás tus cargas para solicitar tu usuario correcto y volvé a este chat con el usuario exacto.`;
+        const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al canal principal donde realizás tus cargas para solicitar tu usuario correcto y volvé a este chat con el usuario exacto.`;
         console.log('Usuario no encontrado ->', msg);
-        await sendReplyToCallbell(conversationId, msg, rawFromString, channelUuid, phoneNumber);
+        await sendToKommo(channelId || KOMMO_SCOPE_ID || conversationId, conversationId, msg);
         return;
       }
 
       const claimedCell = String(rows[foundRowIndex][4] || '').toLowerCase();
       if (claimedCell.includes('reclam')) {
-        const msg = `Estimado/a, según nuestros registros el reembolso para ${username} ya fue marcado como reclamado anteriormente. Si hay un error, contactanos por WhatsApp principal con evidencia.`;
+        const msg = `Estimado/a, según nuestros registros el reembolso para ${username} ya fue marcado como reclamado anteriormente. Si hay un error, contactanos por el canal principal con evidencia.`;
         console.log('Ya reclamado ->', msg);
-        await sendReplyToCallbell(conversationId, msg, rawFromString, channelUuid, phoneNumber);
+        await sendToKommo(channelId || KOMMO_SCOPE_ID || conversationId, conversationId, msg);
         return;
       }
 
@@ -399,17 +424,17 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       const netStr = Number(net).toFixed(2);
 
       if (net <= 1) {
-        const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi creés que hay un error, contactanos por WhatsApp principal y traenos el usuario correcto para que lo revisemos.`;
+        const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi creés que hay un error, contactanos por el canal principal y traenos el usuario correcto para que lo revisemos.`;
         console.log('No aplica reembolso ->', msg);
-        await sendReplyToCallbell(conversationId, msg, rawFromString, channelUuid, phoneNumber);
+        await sendToKommo(channelId || KOMMO_SCOPE_ID || conversationId, conversationId, msg);
         return;
       } else {
         const bonusStr = (net * 0.08).toFixed(2);
         const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. Monto: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nEl reembolso se depositará automáticamente y podrás verificarlo en la plataforma usando tu usuario. Procedo a marcar este reembolso como reclamado en nuestros registros.`;
         console.log('Aplica reembolso ->', msg);
-        const sent = await sendReplyToCallbell(conversationId, msg, rawFromString, channelUuid, phoneNumber);
+        const sent = await sendToKommo(channelId || KOMMO_SCOPE_ID || conversationId, conversationId, msg);
+        if (!sent) console.warn('No se pudo enviar la respuesta a Kommo (ver logs).');
 
-        // mark as claimed if we at least sent the reply (sent true or false — we still attempt marking)
         const rowNumber = 2 + foundRowIndex;
         const marked = await markUserAsClaimed(spreadsheetId, rowNumber, 'E');
         if (marked) console.log(`Usuario ${username} marcado RECLAMADO en fila ${rowNumber}.`);
