@@ -1,4 +1,3 @@
-// (Este archivo es tu index.js completo; solo se muestran cambios relevantes en sendReplyToCallbell y llamadas.)
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -53,6 +52,7 @@ app.get('/debug/last', (req, res) => res.json(lastRequest || {}));
 // ENV
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CALLBELL_API_TOKEN = process.env.CALLBELL_API_TOKEN;
+const CALLBELL_INTEGRATION_UUID = process.env.CALLBELL_INTEGRATION_UUID || null; // optional fallback for whatsapp etc
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
 if (!OPENAI_API_KEY) console.error('❌ OPENAI_API_KEY no está definido en las variables de entorno.');
@@ -73,10 +73,6 @@ const auth = new GoogleAuth({
   credentials: GOOGLE_CREDENTIALS,
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
-
-// (Funciones getSheetData, markUserAsClaimed, parseAmount, calculateTotalsByUser, sleep,
-// detectIntent, casinoChatResponse, extractMessageFromBody, extractUsername, etc. 
-// se mantienen iguales a la versión anterior)
 
 async function getSheetData(spreadsheetId, range) {
   try {
@@ -150,31 +146,41 @@ function calculateTotalsByUser(rows) {
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ---------- MODIFICACIÓN IMPORTANTE: sendReplyToCallbell ahora incluye 'from' y 'content' ----------
-async function sendReplyToCallbell(conversationId, message, fromValue = null) {
+// NEW: sendReplyToCallbell builds the payload the API expects:
+// - content: { text: "..." } (no 'type' inside content for text messages)
+// - from: object { type, uuid } when possible (channel uuid from webhook) or fallback to CALLBELL_INTEGRATION_UUID
+// - to: conversationId
+async function sendReplyToCallbell(conversationId, message, fromObject = null) {
   if (!CALLBELL_API_TOKEN) {
     console.warn('⚠️ No hay CALLBELL_API_TOKEN; no se enviará el mensaje.');
     return;
   }
   try {
     console.log(`Esperando 5s antes de enviar mensaje a Callbell...`);
-    await sleep(5000); // 5 segundos para parecer humano
+    await sleep(5000);
 
-    // Construimos payload intentando cubrir los formatos que la API puede requerir
+    // Build payload according to Callbell's API expectations
     const payload = {
-      // 'from' puede ser algo como: "livechat|...|..." que viene en el webhook
-      ...(fromValue ? { from: fromValue } : {}),
-      // 'to' suele ser el conversation id (payload.to)
-      ...(conversationId ? { to: conversationId } : {}),
-      // Añadimos campo content requerido por la API
+      // 'to' is the conversation id (required)
+      to: conversationId,
+      // 'content' for a text message should be an object with only 'text'
       content: {
-        type: 'text',
         text: message,
       },
-      // Para compatibilidad añadimos también type/text en la raíz
-      type: 'text',
-      text: message,
     };
+
+    // Attach from if we have a sensible object
+    if (fromObject && typeof fromObject === 'object') {
+      // Expecting shape { type: 'livechat'|'whatsapp'|..., uuid: '...' }
+      payload.from = fromObject;
+    } else if (CALLBELL_INTEGRATION_UUID) {
+      // If user supplied a default integration UUID (e.g. whatsapp integration), use it
+      // In that case we prefer type 'whatsapp' if you intend whatsapp messages
+      payload.from = { type: 'whatsapp', uuid: CALLBELL_INTEGRATION_UUID };
+    } else {
+      // Do not send string 'from' like previously (API rejected); leave it out and rely on 'to' if acceptable
+      console.log('No se incluyó campo "from" porque no se detectó un objeto válido ni CALLBELL_INTEGRATION_UUID. Si la API lo requiere, seteá CALLBELL_INTEGRATION_UUID en las vars de entorno.');
+    }
 
     console.log('Enviando a Callbell ->', JSON.stringify(payload));
     const resp = await axios.post('https://api.callbell.eu/v1/messages/send', payload, {
@@ -184,12 +190,10 @@ async function sendReplyToCallbell(conversationId, message, fromValue = null) {
       },
     });
     console.log('Callbell response status:', resp.status, resp.data ? resp.data : '');
-    // Si la API devuelve errores en resp.data.error, los logueamos
     if (resp.data && resp.data.error) {
       console.warn('Callbell API returned error payload:', resp.data.error);
     }
   } catch (err) {
-    // Si la API devuelve error con cuerpo JSON lo mostramos completo
     if (err?.response?.data) {
       console.error('❌ Error enviando mensaje a Callbell:', JSON.stringify(err.response.data, null, 2));
     } else {
@@ -198,10 +202,7 @@ async function sendReplyToCallbell(conversationId, message, fromValue = null) {
   }
 }
 
-// detectIntent, casinoChatResponse, extractMessageFromBody, extractUsername 
-// (idénticas a lo que venías usando; no las repito para evitar redundancia en este bloque, 
-//  pero en tu archivo deben estar incluidas tal como antes)
-
+// OpenAI helpers (unchanged)
 async function detectIntent(message) {
   try {
     const resp = await openai.createChatCompletion({
@@ -273,18 +274,21 @@ function extractMessageFromBody(body, raw) {
     () => body?.message?.add?.[0]?.source?.text,
     () => body?.message?.add?.[0]?.text_raw,
   ];
+
   for (const fn of tryPaths) {
     try {
       const v = fn();
       if (v) return String(v).trim();
     } catch (e) { /* ignore */ }
   }
+
   if (raw) {
     try {
       try {
         const j = JSON.parse(raw);
         if (j?.payload?.text) return String(j.payload.text).trim();
       } catch (e) { /* not JSON */ }
+
       const params = new URLSearchParams(raw);
       for (const [k, v] of params) {
         if (!v) continue;
@@ -297,15 +301,18 @@ function extractMessageFromBody(body, raw) {
       console.warn('extractMessageFromBody: fallo al parsear raw body:', e?.message || e);
     }
   }
+
   return null;
 }
 
 function extractUsername(message) {
   if (!message || typeof message !== 'string') return null;
   const m = message.trim();
+
   const STOPWORDS = new Set([
     'mi','miembro','usuario','es','soy','me','llamo','nombre','el','la','de','por','favor','porfavor','hola','buenas','buenos','noches','dias','tarde','gracias'
   ]);
+
   const explicitPatterns = [
     /usuario(?:\s+es|\s*:\s*|\s+:+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /mi usuario(?:\s+es|\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
@@ -313,47 +320,55 @@ function extractUsername(message) {
     /username(?:\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /@([A-Za-z0-9._-]{3,30})/i,
   ];
+
   for (const re of explicitPatterns) {
     const found = m.match(re);
     if (found && found[1]) return found[1].trim();
   }
+
   const tokens = m.split(/[\s,;.:\-()]+/).filter(Boolean);
   const tokenCandidates = tokens
     .map(t => t.replace(/^[^A-Za-z0-9@]+|[^A-Za-z0-9._-]+$/g, ''))
     .filter(t => t.length >= 3)
     .filter(t => !STOPWORDS.has(t.toLowerCase()));
+
   for (const t of tokenCandidates) {
     if (/\d/.test(t) && /^[A-Za-z0-9._-]{3,30}$/.test(t)) return t;
   }
+
   for (const t of tokenCandidates) {
     if (/^[A-Za-z0-9._-]{3,30}$/.test(t)) {
       const low = t.toLowerCase();
       if (!STOPWORDS.has(low)) return t;
     }
   }
+
   return null;
 }
 
-// WEBHOOK handler (similar al anterior, pero pasamos payload.from cuando llamamos sendReplyToCallbell)
 app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
   res.sendStatus(200);
   (async () => {
     try {
       const receivedText = extractMessageFromBody(req.body, req.rawBody);
+
       let conversationId = null;
       try {
         conversationId = req.body?.payload?.to || req.body?.message?.add?.[0]?.chat_id || null;
       } catch (e) { conversationId = null; }
+
       let messageUuid = null;
       try {
         messageUuid = req.body?.payload?.uuid || req.body?.payload?.message_id || null;
       } catch (e) { messageUuid = null; }
+
       if (!messageUuid && req.rawBody) {
         try {
           const parsed = JSON.parse(req.rawBody);
           messageUuid = parsed?.payload?.uuid || parsed?.payload?.message_id || messageUuid;
         } catch (e) { /* ignore */ }
       }
+
       if (messageUuid && processedMessages.has(messageUuid)) {
         console.log(`Mensaje UUID ${messageUuid} ya procesado recientemente; se ignora para evitar duplicados.`);
         return;
@@ -363,19 +378,36 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
         console.log('Webhook recibido pero no se encontró texto del usuario. Payload guardado en /debug/last para inspección.');
         return;
       }
+
       console.log('Mensaje recibido ->', receivedText);
       if (conversationId) console.log('Conversation ID detectado ->', conversationId);
       if (messageUuid) console.log('Message UUID ->', messageUuid);
 
-      // Aquí extraemos payload.from para pasarlo a la función de envío
-      const payloadFrom = req.body?.payload?.from || null;
+      // Build a sensible fromObject for Callbell API:
+      // prefer payload.contact.channel.uuid (webhook includes contact.channel.uuid)
+      // and use channel type if available (payload.channel or contact.channel.type)
+      let fromObject = null;
+      try {
+        const channelUuid = req.body?.payload?.contact?.channel?.uuid || null;
+        const channelType = (req.body?.payload?.channel || req.body?.payload?.contact?.channel?.type || 'livechat');
+        if (channelUuid) {
+          fromObject = { type: channelType, uuid: channelUuid };
+        } else if (CALLBELL_INTEGRATION_UUID) {
+          // fallback to integration uuid provided in env
+          // defaulting type to 'whatsapp' — change env var if needed
+          fromObject = { type: 'whatsapp', uuid: CALLBELL_INTEGRATION_UUID };
+        }
+      } catch (e) { fromObject = null; }
+
+      // Dedup handled above
 
       const intent = await detectIntent(receivedText);
       console.log('Intent detectado por OpenAI ->', intent);
+
       if (intent.type === 'chat') {
         const reply = await casinoChatResponse(receivedText);
         console.log('Respuesta ChatGPT generada (solo una) ->', reply);
-        await sendReplyToCallbell(conversationId, reply, payloadFrom);
+        await sendReplyToCallbell(conversationId, reply, fromObject);
         return;
       }
 
@@ -384,7 +416,7 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       if (!username) {
         const ask = 'Estimado/a, entiendo que querés que verifique tu usuario. Por favor enviá exactamente tu nombre de usuario tal como figura en la plataforma para que lo confirme en nuestros registros.';
         console.log('No se pudo extraer username; se solicita aclaración ->', ask);
-        await sendReplyToCallbell(conversationId, ask, payloadFrom);
+        await sendReplyToCallbell(conversationId, ask, fromObject);
         return;
       }
 
@@ -408,7 +440,7 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       if (foundRowIndex === -1) {
         const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al WhatsApp principal donde realizás tus cargas para solicitar tu nombre de usuario correcto y volvé a este chat con el usuario exacto para que podamos corroborar el reembolso.`;
         console.log('Respuesta enviada (usuario no encontrado) ->', msg);
-        await sendReplyToCallbell(conversationId, msg, payloadFrom);
+        await sendReplyToCallbell(conversationId, msg, fromObject);
         return;
       }
 
@@ -416,7 +448,7 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       if (claimedCell.includes('reclam')) {
         const msg = `Estimado/a, según nuestros registros el reembolso para ${username} ya fue marcado como reclamado anteriormente. Si creés que hay un error, contactanos por WhatsApp principal con evidencia y lo revisamos.`;
         console.log('Respuesta enviada (ya reclamado) ->', msg);
-        await sendReplyToCallbell(conversationId, msg, payloadFrom);
+        await sendReplyToCallbell(conversationId, msg, fromObject);
         return;
       }
 
@@ -429,14 +461,14 @@ app.post(['/', '/webhook-callbell', '/webhook-kommo'], (req, res) => {
       if (net <= 1) {
         const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi considerás que hay un error, por favor contactanos por WhatsApp principal y traenos el usuario correcto para que lo revisemos.`;
         console.log('Respuesta enviada (no aplica reembolso) ->', msg);
-        await sendReplyToCallbell(conversationId, msg, payloadFrom);
+        await sendReplyToCallbell(conversationId, msg, fromObject);
         return;
       } else {
         const bonus = (net * 0.08);
         const bonusStr = bonus.toFixed(2);
         const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. El monto de reembolso es: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nEl reembolso se depositará automáticamente en tu cuenta y podrás verificarlo en la plataforma usando tu usuario. Procedo a marcar este reembolso como reclamado en nuestros registros.`;
         console.log('Respuesta enviada (aplica reembolso) ->', msg);
-        await sendReplyToCallbell(conversationId, msg, payloadFrom);
+        await sendReplyToCallbell(conversationId, msg, fromObject);
 
         const rowNumber = 2 + foundRowIndex;
         const marked = await markUserAsClaimed(spreadsheetId, rowNumber, 'E');
