@@ -69,10 +69,10 @@ const openai = new OpenAIApi(new Configuration({
   apiKey: OPENAI_API_KEY,
 }));
 
-// ================== GOOGLE AUTH ==================
+// ================== GOOGLE AUTH (AHORA CON PERMISO DE ESCRITURA) ==================
 const auth = new GoogleAuth({
   credentials: GOOGLE_CREDENTIALS,
-  scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  scopes: ['https://www.googleapis.com/auth/spreadsheets'], // escritura incluida
 });
 
 // ================== GOOGLE SHEETS ==================
@@ -85,6 +85,26 @@ async function getSheetData(spreadsheetId, range) {
   } catch (error) {
     console.error('❌ Error leyendo Google Sheets:', error?.message || error);
     return [];
+  }
+}
+
+async function markUserAsClaimed(spreadsheetId, rowNumber, columnLetter = 'E') {
+  try {
+    const authClient = await auth.getClient();
+    const sheets = google.sheets({ version: 'v4', auth: authClient });
+    const range = `Sheet1!${columnLetter}${rowNumber}`;
+    const resource = { values: [['RECLAMADO']] };
+    const res = await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      resource,
+    });
+    console.log(`Google Sheets: marcado row ${rowNumber} col ${columnLetter} como RECLAMADO.`, res.status);
+    return true;
+  } catch (err) {
+    console.error('❌ Error marcando usuario como reclamado en Sheets:', err?.message || err);
+    return false;
   }
 }
 
@@ -105,12 +125,10 @@ function calculateTotalsByUser(rows) {
     if (!user) return;
     if (!totals[user]) totals[user] = { deposits: 0, withdrawals: 0 };
 
-    // Normalizar y aceptar muchas variantes para depósitos y retiros
     if (type.includes('deposit') || type.includes('depósito') || type.includes('deposito')) {
       totals[user].deposits += amount;
     }
 
-    // Variantes comunes (inglés y español, incluyendo typos como 'whitdraw'/'witdraw')
     if (
       type.includes('withdraw') ||
       type.includes('withdrawal') ||
@@ -162,7 +180,6 @@ async function sendReply(chatId, message) {
 // ================== GPT INTENT DETECTOR ==================
 async function detectIntent(message) {
   try {
-    // Prompt mejorado para clasificar username vs chat (responder SOLO JSON)
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0,
@@ -177,11 +194,7 @@ Respondé SOLO JSON: { "type": "username" } o { "type": "chat" }
 Reglas:
 - Si el texto contiene un posible username (token alfanumérico de 3-30 caracteres, puede incluir . _ - y opcionalmente empezar con @), o frases como "mi usuario es X", "usuario: X", "soy X", responde { "type": "username" }.
 - Si el texto es un saludo, pregunta, comentario general o conversación sin un username claro, responde { "type": "chat" }.
-- Ejemplos (ejecutalos mentalmente):
-  - "BigJose1010" -> username
-  - "Mi usuario es BigJose1010." -> username
-  - "Hola necesito ayuda" -> chat
-  - "Quiero mi reembolso con usuario BigJose1010" -> username
+- Ejemplos implícitos: "usuarioX" -> username; "Hola necesito ayuda" -> chat.
 
 Respondé EXACTAMENTE con el JSON, sin texto adicional.
           `,
@@ -201,7 +214,6 @@ Respondé EXACTAMENTE con el JSON, sin texto adicional.
 // ================== GPT CHAT RESPONSE ==================
 async function casinoChatResponse(message) {
   try {
-    // Prompt enriquecido: rol, tono y políticas (argentino, serio, empático, 24/7, instrucciones de WhatsApp, etc.)
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.7,
@@ -215,23 +227,17 @@ Características importantes:
 - Atención 24 horas para cargas y retiros.
 - No hay límite máximo de retiro; los retiros se procesan 24/7.
 - Cuando correspondan reembolsos, informá claramente el monto y explicá que se depositará automáticamente en la cuenta del cliente y podrá verificarlo en la plataforma usando su usuario.
-- Si el cliente no proporcionó su usuario, pedílo de manera amable y concisa (ej: "¿Podés confirmarme tu usuario, por favor? (ej: BigJose1010)").
+- Si el cliente no proporcionó su usuario, pedílo de manera amable y concisa.
 - Si luego no se encuentra el usuario en nuestros registros, indicá profesionalmente: que debe dirigirse al WhatsApp principal donde realiza sus cargas para solicitar su nombre de usuario correcto y luego volver a este chat con el usuario exacto para que verifiquemos el reembolso.
 - Si corresponde reembolso, ofrecé asistencia adicional ("¿Querés que gestione la solicitud de reembolso ahora?") y mantente empático.
 - No des consejos financieros; enfocáte en procesos operativos y atención al cliente.
 - Siempre mantén el texto claro, cortés y profesional; evita jerga excesiva.
-
-Ejemplos de respuestas:
-- Si falta el usuario: "Estimado/a, ¿podés confirmarme tu usuario (por ejemplo: BigJose1010)? Así lo verifico en el sistema."
-- Si corresponde reembolso: "Estimado/a, confirmamos que corresponde un reembolso de $X. Se depositará automáticamente en tu cuenta y podrás verlo en la plataforma con tu usuario. ¿Querés que lo gestione ahora?"
-- Si no corresponde: "Estimado/a, según nuestros registros no corresponde reembolso en este caso. Detalle: ... Si creés que hay un error, contactanos por WhatsApp principal y traenos el usuario correcto."
-
-Respondé con naturalidad, profesionalismo y empatía.
           `,
         },
         { role: 'user', content: message },
       ],
     });
+    // Solo usamos la primera opción y la retornamos (una única respuesta)
     return resp.data?.choices?.[0]?.message?.content || '';
   } catch (err) {
     console.error('❌ casinoChatResponse error:', err?.message || err);
@@ -288,7 +294,7 @@ function extractUsername(message) {
   const m = message.trim();
 
   const STOPWORDS = new Set([
-    'mi','miembro','usuario','usuario:','usuario','es','soy','me','llamo','llamo','nombre','es:','el','la','de','por','favor','porfavor','hola','buenas','buenos','noches','dias','tarde','gracias'
+    'mi','miembro','usuario','es','soy','me','llamo','nombre','el','la','de','por','favor','porfavor','hola','buenas','buenos','noches','dias','tarde','gracias'
   ]);
 
   const explicitPatterns = [
@@ -365,7 +371,7 @@ app.post('/webhook-kommo', (req, res) => {
       // Si es chat, generar respuesta conversacional
       if (intent.type === 'chat') {
         const reply = await casinoChatResponse(receivedText);
-        console.log('Respuesta ChatGPT generada ->', reply);
+        console.log('Respuesta ChatGPT generada (solo una) ->', reply);
         await sendReply(chatId, reply);
         return;
       }
@@ -375,7 +381,7 @@ app.post('/webhook-kommo', (req, res) => {
       console.log('Username extraído ->', username);
 
       if (!username) {
-        const ask = 'Estimado/a, entiendo que querés que verifique tu usuario. ¿Podés enviarme solo tu nombre de usuario (por ejemplo: BigJose1010) para que lo confirme en nuestros registros?';
+        const ask = 'Estimado/a, entiendo que querés que verifique tu usuario. Por favor enviá exactamente tu nombre de usuario tal como figura en la plataforma para que lo confirme en nuestros registros.';
         console.log('No se pudo extraer username; se solicita aclaración ->', ask);
         await sendReply(chatId, ask);
         return;
@@ -384,21 +390,41 @@ app.post('/webhook-kommo', (req, res) => {
       const lookupKey = String(username).toLowerCase().trim();
       console.log('Lookup key (lowercased) ->', lookupKey);
 
-      // Buscar en Google Sheets
+      // Buscar en Google Sheets (ahora leemos columna E también para ver si está reclamado)
       const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
-      const range = 'Sheet1!A2:D10000';
+      const range = 'Sheet1!A2:E10000'; // incluye columna E como marcador de reclamo
       const rows = await getSheetData(spreadsheetId, range);
       const totals = calculateTotalsByUser(rows);
 
-      const data = totals[lookupKey];
+      // localizar la fila exacta (para marcar columna E si es necesario)
+      let foundRowIndex = -1;
+      for (let i = 0; i < rows.length; i++) {
+        const rowUser = String(rows[i][1] || '').toLowerCase().trim();
+        if (rowUser === lookupKey) {
+          foundRowIndex = i; // index dentro de rows (A2 corresponde a i=0)
+          break;
+        }
+      }
 
-      if (!data) {
-        const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al WhatsApp principal donde realizás tus cargas, solicitá tu nombre de usuario correcto y volvé a este chat con el usuario exacto para que podamos corroborar el reembolso.`;
+      if (foundRowIndex === -1) {
+        const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al WhatsApp principal donde realizás tus cargas para solicitar tu nombre de usuario correcto y volvé a este chat con el usuario exacto para que podamos corroborar el reembolso.`;
         console.log('Respuesta enviada (usuario no encontrado) ->', msg);
         await sendReply(chatId, msg);
         return;
       }
 
+      // verificar si ya fue reclamado (columna E = index 4 en rows)
+      const claimedCell = String(rows[foundRowIndex][4] || '').toLowerCase();
+      if (claimedCell.includes('reclam')) {
+        const msg = `Estimado/a, según nuestros registros el reembolso para ${username} ya fue marcado como reclamado anteriormente. Si creés que hay un error, contactanos por WhatsApp principal con evidencia y lo revisamos.`;
+        console.log('Respuesta enviada (ya reclamado) ->', msg);
+        await sendReply(chatId, msg);
+        return;
+      }
+
+      // obtener totales y decidir reembolso
+      const userTotals = totals[lookupKey];
+      const data = userTotals || { deposits: 0, withdrawals: 0 };
       const net = data.deposits - data.withdrawals;
       const depositsStr = Number(data.deposits).toFixed(2);
       const withdrawalsStr = Number(data.withdrawals).toFixed(2);
@@ -408,12 +434,23 @@ app.post('/webhook-kommo', (req, res) => {
         const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi considerás que hay un error, por favor contactanos por WhatsApp principal y traenos el usuario correcto para que lo revisemos.`;
         console.log('Respuesta enviada (no aplica reembolso) ->', msg);
         await sendReply(chatId, msg);
+        return;
       } else {
         const bonus = (net * 0.08);
         const bonusStr = bonus.toFixed(2);
-        const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. El monto de reembolso es: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nEl reembolso se depositará automáticamente en tu cuenta y podrás verificarlo en la plataforma usando tu usuario. ¿Querés que gestione el reembolso ahora?`;
+        const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. El monto de reembolso es: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nEl reembolso se depositará automáticamente en tu cuenta y podrás verificarlo en la plataforma usando tu usuario. Procedo a marcar este reembolso como reclamado en nuestros registros.`;
         console.log('Respuesta enviada (aplica reembolso) ->', msg);
         await sendReply(chatId, msg);
+
+        // marcar en Sheets: rowNumber = 2 + foundRowIndex (porque rows comienza en A2)
+        const rowNumber = 2 + foundRowIndex;
+        const marked = await markUserAsClaimed(spreadsheetId, rowNumber, 'E');
+        if (marked) {
+          console.log(`Usuario ${username} marcado como RECLAMADO en la fila ${rowNumber}.`);
+        } else {
+          console.warn(`No se pudo marcar como RECLAMADO al usuario ${username} en la fila ${rowNumber}.`);
+        }
+        return;
       }
     } catch (err) {
       console.error('❌ Error procesando webhook (background):', err?.message || err);
