@@ -184,9 +184,7 @@ function extractMessageFromBody(body, raw) {
     () => body?.message?.add?.[0]?.text,
     () => body?.unsorted?.update?.[0]?.source_data?.data?.[0]?.text,
     () => body?.unsorted?.update?.[0]?.source_data?.data?.[0]?.text,
-    () => body?.unsorted?.update?.[0]?.source_data?.data?.[0]?.text,
-    () => body?.leads?.update?.[0]?.some_text, // placeholder (ejemplo)
-    // Otros posibles lugares:
+    () => body?.leads?.update?.[0]?.some_text,
     () => body?.message?.add?.[0]?.source?.text,
     () => body?.message?.add?.[0]?.text_raw,
   ];
@@ -201,9 +199,7 @@ function extractMessageFromBody(body, raw) {
   // 2) fallback: parsear raw (application/x-www-form-urlencoded) con URLSearchParams
   if (raw) {
     try {
-      // Raw puede contener percent-encoding y + por espacios
       const params = new URLSearchParams(raw);
-      // Buscar keys que terminen con [text] o contengan 'text'
       for (const [k, v] of params) {
         if (!v) continue;
         const keyLower = k.toLowerCase();
@@ -211,7 +207,6 @@ function extractMessageFromBody(body, raw) {
           return decodeURIComponent(String(v)).replace(/\+/g, ' ').trim();
         }
       }
-      // Si no encontró text explícito, intentar la primera entrada con key que contenga 'message' o 'source_data'
       for (const [k, v] of params) {
         const keyLower = k.toLowerCase();
         if ((keyLower.includes('message') || keyLower.includes('source_data') || keyLower.includes('data')) && v) {
@@ -224,6 +219,62 @@ function extractMessageFromBody(body, raw) {
     }
   }
 
+  return null;
+}
+
+// ================== UTIL: extraer username desde un texto natural ==================
+function extractUsername(message) {
+  if (!message || typeof message !== 'string') return null;
+  const m = message.trim();
+
+  // Stopwords comunes en español que podemos ignorar como candidates
+  const STOPWORDS = new Set([
+    'mi','miembro','usuario','usuario:','usuario','es','soy','me','llamo','llamo','nombre','es:','el','la','de','por','favor','porfavor','hola','buenas','buenos','noches','dias','tarde','gracias'
+  ]);
+
+  // 1) patrones explícitos: "mi usuario es X", "usuario: X", "mi usuario: X", "soy X", "username: X", "@X"
+  const explicitPatterns = [
+    /usuario(?:\s+es|\s*:\s*|\s+:+)\s*@?([A-Za-z0-9._-]{3,30})/i,
+    /mi usuario(?:\s+es|\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
+    /\bsoy\s+@?([A-Za-z0-9._-]{3,30})\b/i,
+    /username(?:\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
+    /@([A-Za-z0-9._-]{3,30})/i,
+    /\b([A-Za-z0-9._-]{3,30})\b/ // fallback token pattern (evaluado después)
+  ];
+
+  for (const re of explicitPatterns) {
+    const found = m.match(re);
+    if (found && found[1]) {
+      return found[1].trim();
+    }
+    // Para la última regex de fallback, no devolvemos inmediatamente para aplicar heurística
+  }
+
+  // 2) Si no hubo coincidencia explícita, separar en tokens y buscar candidatos más probables.
+  const tokens = m.split(/[\s,;.:\-()]+/).filter(Boolean);
+  // Prefiere tokens que contengan números (suelen ser usernames)
+  const tokenCandidates = tokens
+    .map(t => t.replace(/^[^A-Za-z0-9@]+|[^A-Za-z0-9._-]+$/g, '')) // trim punctuation
+    .filter(t => t.length >= 3)
+    .filter(t => !STOPWORDS.has(t.toLowerCase()));
+
+  // Busca tokens con dígitos primero
+  for (const t of tokenCandidates) {
+    if (/\d/.test(t) && /^[A-Za-z0-9._-]{3,30}$/.test(t)) {
+      return t;
+    }
+  }
+
+  // Si no hay con dígitos, busca tokens alfanuméricos válidos (sin ser sólo palabras cortas/stopwords)
+  for (const t of tokenCandidates) {
+    if (/^[A-Za-z0-9._-]{3,30}$/.test(t)) {
+      // evitar devolver palabras comunes en español (ej: "hola", "gracias")
+      const low = t.toLowerCase();
+      if (!STOPWORDS.has(low)) return t;
+    }
+  }
+
+  // 3) Si no hay ningún candidato claro, devolver null
   return null;
 }
 
@@ -274,17 +325,32 @@ app.post('/webhook-kommo', (req, res) => {
         return;
       }
 
-      // Si es username -> buscar en Google Sheets
+      // Si el intent indica username -> extraer username del texto
+      const username = extractUsername(receivedText);
+      console.log('Username extraído ->', username);
+
+      if (!username) {
+        // Si no se pudo extraer, pedir que envíe solo su usuario o lo confirme
+        const ask = 'Entiendo que querés consultar por tu usuario. ¿Podrías enviarme solo tu nombre de usuario (por ejemplo: BigJose1010)?';
+        console.log('No se pudo extraer username; se solicita aclaración ->', ask);
+        await sendReply(chatId, ask);
+        return;
+      }
+
+      // Normalizar para búsqueda insensible a mayúsculas/minúsculas
+      const lookupKey = String(username).toLowerCase().trim();
+      console.log('Lookup key (lowercased) ->', lookupKey);
+
+      // Buscar en Google Sheets
       const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
       const range = 'Sheet1!A2:D10000';
       const rows = await getSheetData(spreadsheetId, range);
       const totals = calculateTotalsByUser(rows);
 
-      const lookupKey = String(receivedText).toLowerCase();
       const data = totals[lookupKey];
 
       if (!data) {
-        const msg = 'No logro encontrar ese usuario 🤔 ¿podés revisarlo y enviármelo nuevamente?';
+        const msg = `No logro encontrar ese usuario (${username}) 🤔 ¿podés revisarlo y enviármelo nuevamente?`;
         console.log('Respuesta enviada (usuario no encontrado) ->', msg);
         await sendReply(chatId, msg);
         return;
