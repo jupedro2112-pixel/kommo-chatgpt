@@ -162,13 +162,29 @@ async function sendReply(chatId, message) {
 // ================== GPT INTENT DETECTOR ==================
 async function detectIntent(message) {
   try {
+    // Prompt mejorado para clasificar username vs chat (responder SOLO JSON)
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0,
       messages: [
         {
           role: 'system',
-          content: `Sos un clasificador. Decidí si el mensaje es un NOMBRE DE USUARIO o una CHARLA. Respondé SOLO JSON: { "type": "username" } o { "type": "chat" }`,
+          content: `
+Sos un clasificador. Decidí si el mensaje es un NOMBRE DE USUARIO o una CHARLA.
+
+Respondé SOLO JSON: { "type": "username" } o { "type": "chat" }
+
+Reglas:
+- Si el texto contiene un posible username (token alfanumérico de 3-30 caracteres, puede incluir . _ - y opcionalmente empezar con @), o frases como "mi usuario es X", "usuario: X", "soy X", responde { "type": "username" }.
+- Si el texto es un saludo, pregunta, comentario general o conversación sin un username claro, responde { "type": "chat" }.
+- Ejemplos (ejecutalos mentalmente):
+  - "BigJose1010" -> username
+  - "Mi usuario es BigJose1010." -> username
+  - "Hola necesito ayuda" -> chat
+  - "Quiero mi reembolso con usuario BigJose1010" -> username
+
+Respondé EXACTAMENTE con el JSON, sin texto adicional.
+          `,
         },
         { role: 'user', content: message },
       ],
@@ -185,13 +201,33 @@ async function detectIntent(message) {
 // ================== GPT CHAT RESPONSE ==================
 async function casinoChatResponse(message) {
   try {
+    // Prompt enriquecido: rol, tono y políticas (argentino, serio, empático, 24/7, instrucciones de WhatsApp, etc.)
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.7,
       messages: [
         {
           role: 'system',
-          content: `Sos un agente humano de casino online. Sos amable, claro, natural. Tu objetivo es ayudar y pedir el nombre de usuario sin sonar robot.`,
+          content: `
+Sos un agente virtual de casino online. Respondés en español con variante rioplatense (Argentina). Usá "vos" cuando sea apropiado, manteniendo un tono profesional, serio y empático.
+
+Características importantes:
+- Atención 24 horas para cargas y retiros.
+- No hay límite máximo de retiro; los retiros se procesan 24/7.
+- Cuando correspondan reembolsos, informá claramente el monto y explicá que se depositará automáticamente en la cuenta del cliente y podrá verificarlo en la plataforma usando su usuario.
+- Si el cliente no proporcionó su usuario, pedílo de manera amable y concisa (ej: "¿Podés confirmarme tu usuario, por favor? (ej: BigJose1010)").
+- Si luego no se encuentra el usuario en nuestros registros, indicá profesionalmente: que debe dirigirse al WhatsApp principal donde realiza sus cargas para solicitar su nombre de usuario correcto y luego volver a este chat con el usuario exacto para que verifiquemos el reembolso.
+- Si corresponde reembolso, ofrecé asistencia adicional ("¿Querés que gestione la solicitud de reembolso ahora?") y mantente empático.
+- No des consejos financieros; enfocáte en procesos operativos y atención al cliente.
+- Siempre mantén el texto claro, cortés y profesional; evita jerga excesiva.
+
+Ejemplos de respuestas:
+- Si falta el usuario: "Estimado/a, ¿podés confirmarme tu usuario (por ejemplo: BigJose1010)? Así lo verifico en el sistema."
+- Si corresponde reembolso: "Estimado/a, confirmamos que corresponde un reembolso de $X. Se depositará automáticamente en tu cuenta y podrás verlo en la plataforma con tu usuario. ¿Querés que lo gestione ahora?"
+- Si no corresponde: "Estimado/a, según nuestros registros no corresponde reembolso en este caso. Detalle: ... Si creés que hay un error, contactanos por WhatsApp principal y traenos el usuario correcto."
+
+Respondé con naturalidad, profesionalismo y empatía.
+          `,
         },
         { role: 'user', content: message },
       ],
@@ -339,7 +375,7 @@ app.post('/webhook-kommo', (req, res) => {
       console.log('Username extraído ->', username);
 
       if (!username) {
-        const ask = 'Entiendo que querés consultar por tu usuario. ¿Podrías enviarme solo tu nombre de usuario (por ejemplo: BigJose1010)?';
+        const ask = 'Estimado/a, entiendo que querés que verifique tu usuario. ¿Podés enviarme solo tu nombre de usuario (por ejemplo: BigJose1010) para que lo confirme en nuestros registros?';
         console.log('No se pudo extraer username; se solicita aclaración ->', ask);
         await sendReply(chatId, ask);
         return;
@@ -357,7 +393,7 @@ app.post('/webhook-kommo', (req, res) => {
       const data = totals[lookupKey];
 
       if (!data) {
-        const msg = `Estimado/a, no hemos encontrado el usuario ${username} en nuestros registros. Por favor verificalo y reenviamelo exactamente como figura en tu cuenta.`;
+        const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al WhatsApp principal donde realizás tus cargas, solicitá tu nombre de usuario correcto y volvé a este chat con el usuario exacto para que podamos corroborar el reembolso.`;
         console.log('Respuesta enviada (usuario no encontrado) ->', msg);
         await sendReply(chatId, msg);
         return;
@@ -369,13 +405,13 @@ app.post('/webhook-kommo', (req, res) => {
       const netStr = Number(net).toFixed(2);
 
       if (net <= 1) {
-        const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi creés que hay un error, por favor contactanos con evidencia y lo revisamos.`;
+        const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi considerás que hay un error, por favor contactanos por WhatsApp principal y traenos el usuario correcto para que lo revisemos.`;
         console.log('Respuesta enviada (no aplica reembolso) ->', msg);
         await sendReply(chatId, msg);
       } else {
         const bonus = (net * 0.08);
         const bonusStr = bonus.toFixed(2);
-        const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. El monto de reembolso es: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi querés proceder con el reembolso o tenés dudas, avisanos y lo gestionamos.`;
+        const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. El monto de reembolso es: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nEl reembolso se depositará automáticamente en tu cuenta y podrás verificarlo en la plataforma usando tu usuario. ¿Querés que gestione el reembolso ahora?`;
         console.log('Respuesta enviada (aplica reembolso) ->', msg);
         await sendReply(chatId, msg);
       }
