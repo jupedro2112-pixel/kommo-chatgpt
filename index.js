@@ -104,20 +104,46 @@ function calculateTotalsByUser(rows) {
     const amount = parseAmount(row[2]);
     if (!user) return;
     if (!totals[user]) totals[user] = { deposits: 0, withdrawals: 0 };
-    if (type.includes('deposit')) totals[user].deposits += amount;
-    if (type.includes('withdraw') || type.includes('witdraw') || type.includes('retir')) totals[user].withdrawals += amount;
+
+    // Normalizar y aceptar muchas variantes para depósitos y retiros
+    if (type.includes('deposit') || type.includes('depósito') || type.includes('deposito')) {
+      totals[user].deposits += amount;
+    }
+
+    // Variantes comunes (inglés y español, incluyendo typos como 'whitdraw'/'witdraw')
+    if (
+      type.includes('withdraw') ||
+      type.includes('withdrawal') ||
+      type.includes('whitdraw') ||
+      type.includes('witdraw') ||
+      type.includes('retiro') ||
+      type.includes('retiros') ||
+      type.includes('retir') ||
+      type.includes('withdraws') ||
+      type.includes('ret')
+    ) {
+      totals[user].withdrawals += amount;
+    }
   });
   return totals;
 }
 
-// ================== SEND MESSAGE TO KOMMO ==================
+// ================== UTIL: sleep para simular demora humana ==================
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// ================== SEND MESSAGE TO KOMMO (espera 5s antes de enviar) ==================
 async function sendReply(chatId, message) {
   if (!KOMMO_ACCESS_TOKEN) {
     console.warn('⚠️ No hay KOMMO_ACCESS_TOKEN; no se enviará el mensaje.');
     return;
   }
   try {
+    console.log(`Esperando 5s antes de enviar mensaje a Kommo...`);
+    await sleep(5000); // 5 segundos para parecer humano
     console.log(`Enviando a Kommo -> chat_id: ${chatId}, message: ${message}`);
+    if (!chatId) {
+      console.warn('⚠️ chatId es nulo o indefinido — Kommo podría requerir chat_id para enviar mensajes.');
+    }
     const resp = await axios.post('https://api.kommo.com/v1/messages', {
       chat_id: chatId,
       message,
@@ -179,7 +205,6 @@ async function casinoChatResponse(message) {
 
 // ================== UTIL: extraer texto del body (soporta varias formas) ==================
 function extractMessageFromBody(body, raw) {
-  // 1) rutas más comunes (cuando express.urlencoded con extended:true parseó bien)
   const tryPaths = [
     () => body?.message?.add?.[0]?.text,
     () => body?.unsorted?.update?.[0]?.source_data?.data?.[0]?.text,
@@ -196,7 +221,6 @@ function extractMessageFromBody(body, raw) {
     } catch (e) { /* ignore */ }
   }
 
-  // 2) fallback: parsear raw (application/x-www-form-urlencoded) con URLSearchParams
   if (raw) {
     try {
       const params = new URLSearchParams(raw);
@@ -227,54 +251,40 @@ function extractUsername(message) {
   if (!message || typeof message !== 'string') return null;
   const m = message.trim();
 
-  // Stopwords comunes en español que podemos ignorar como candidates
   const STOPWORDS = new Set([
     'mi','miembro','usuario','usuario:','usuario','es','soy','me','llamo','llamo','nombre','es:','el','la','de','por','favor','porfavor','hola','buenas','buenos','noches','dias','tarde','gracias'
   ]);
 
-  // 1) patrones explícitos: "mi usuario es X", "usuario: X", "mi usuario: X", "soy X", "username: X", "@X"
   const explicitPatterns = [
     /usuario(?:\s+es|\s*:\s*|\s+:+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /mi usuario(?:\s+es|\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /\bsoy\s+@?([A-Za-z0-9._-]{3,30})\b/i,
     /username(?:\s*:\s*|\s+)\s*@?([A-Za-z0-9._-]{3,30})/i,
     /@([A-Za-z0-9._-]{3,30})/i,
-    /\b([A-Za-z0-9._-]{3,30})\b/ // fallback token pattern (evaluado después)
   ];
 
   for (const re of explicitPatterns) {
     const found = m.match(re);
-    if (found && found[1]) {
-      return found[1].trim();
-    }
-    // Para la última regex de fallback, no devolvemos inmediatamente para aplicar heurística
+    if (found && found[1]) return found[1].trim();
   }
 
-  // 2) Si no hubo coincidencia explícita, separar en tokens y buscar candidatos más probables.
   const tokens = m.split(/[\s,;.:\-()]+/).filter(Boolean);
-  // Prefiere tokens que contengan números (suelen ser usernames)
   const tokenCandidates = tokens
-    .map(t => t.replace(/^[^A-Za-z0-9@]+|[^A-Za-z0-9._-]+$/g, '')) // trim punctuation
+    .map(t => t.replace(/^[^A-Za-z0-9@]+|[^A-Za-z0-9._-]+$/g, ''))
     .filter(t => t.length >= 3)
     .filter(t => !STOPWORDS.has(t.toLowerCase()));
 
-  // Busca tokens con dígitos primero
   for (const t of tokenCandidates) {
-    if (/\d/.test(t) && /^[A-Za-z0-9._-]{3,30}$/.test(t)) {
-      return t;
-    }
+    if (/\d/.test(t) && /^[A-Za-z0-9._-]{3,30}$/.test(t)) return t;
   }
 
-  // Si no hay con dígitos, busca tokens alfanuméricos válidos (sin ser sólo palabras cortas/stopwords)
   for (const t of tokenCandidates) {
     if (/^[A-Za-z0-9._-]{3,30}$/.test(t)) {
-      // evitar devolver palabras comunes en español (ej: "hola", "gracias")
       const low = t.toLowerCase();
       if (!STOPWORDS.has(low)) return t;
     }
   }
 
-  // 3) Si no hay ningún candidato claro, devolver null
   return null;
 }
 
@@ -287,13 +297,12 @@ app.post('/webhook-kommo', (req, res) => {
     try {
       // Extraer texto del body de forma robusta
       const receivedText = extractMessageFromBody(req.body, req.rawBody);
-      // Si express parseó message.add[0] a un objeto, también sacamos chat_id/other fields
+
       let chatId = null;
       try {
         chatId = req.body?.message?.add?.[0]?.chat_id || req.body?.unsorted?.update?.[0]?.source_data?.origin?.chat_id || null;
       } catch (e) { chatId = null; }
 
-      // Si no hay chatId, tratar de extraerlo del raw
       if (!chatId && req.rawBody) {
         const params = new URLSearchParams(req.rawBody);
         for (const [k, v] of params) {
@@ -330,14 +339,12 @@ app.post('/webhook-kommo', (req, res) => {
       console.log('Username extraído ->', username);
 
       if (!username) {
-        // Si no se pudo extraer, pedir que envíe solo su usuario o lo confirme
         const ask = 'Entiendo que querés consultar por tu usuario. ¿Podrías enviarme solo tu nombre de usuario (por ejemplo: BigJose1010)?';
         console.log('No se pudo extraer username; se solicita aclaración ->', ask);
         await sendReply(chatId, ask);
         return;
       }
 
-      // Normalizar para búsqueda insensible a mayúsculas/minúsculas
       const lookupKey = String(username).toLowerCase().trim();
       console.log('Lookup key (lowercased) ->', lookupKey);
 
@@ -350,7 +357,7 @@ app.post('/webhook-kommo', (req, res) => {
       const data = totals[lookupKey];
 
       if (!data) {
-        const msg = `No logro encontrar ese usuario (${username}) 🤔 ¿podés revisarlo y enviármelo nuevamente?`;
+        const msg = `Estimado/a, no hemos encontrado el usuario ${username} en nuestros registros. Por favor verificalo y reenviamelo exactamente como figura en tu cuenta.`;
         console.log('Respuesta enviada (usuario no encontrado) ->', msg);
         await sendReply(chatId, msg);
         return;
@@ -362,13 +369,14 @@ app.post('/webhook-kommo', (req, res) => {
       const netStr = Number(net).toFixed(2);
 
       if (net <= 1) {
-        const msg = `ℹ️ Perfecto, ya te encontré.\n\nDepósitos: ${depositsStr}\nRetiros: ${withdrawalsStr}\n\nPor ahora no aplica el 8% 😉`;
-        console.log('Respuesta enviada ->', msg);
+        const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi creés que hay un error, por favor contactanos con evidencia y lo revisamos.`;
+        console.log('Respuesta enviada (no aplica reembolso) ->', msg);
         await sendReply(chatId, msg);
       } else {
-        const bonus = (net * 0.08).toFixed(2);
-        const msg = `🎉 ¡Listo!\n\n💰 Depósitos: ${depositsStr}\n💸 Retiros: ${withdrawalsStr}\n📊 Neto: ${netStr}\n\n🎁 Tu reembolso es *${bonus}*`;
-        console.log('Respuesta enviada ->', msg);
+        const bonus = (net * 0.08);
+        const bonusStr = bonus.toFixed(2);
+        const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. El monto de reembolso es: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}\n\nSi querés proceder con el reembolso o tenés dudas, avisanos y lo gestionamos.`;
+        console.log('Respuesta enviada (aplica reembolso) ->', msg);
         await sendReply(chatId, msg);
       }
     } catch (err) {
