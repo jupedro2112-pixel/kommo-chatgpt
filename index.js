@@ -5,6 +5,7 @@
 // - CHATWOOT_BASE (opcional, por defecto https://app.chatwoot.com)
 // - (opcional) CHATWOOT_ACCOUNT_ID (se usa si no viene en el webhook)
 // - (opcional) GOOGLE_CREDENTIALS_JSON (si usás Sheets)
+// - (opcional) PORT
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
@@ -360,6 +361,31 @@ app.get('/debug/check-token', async (req, res) => {
     const data = err?.response?.data;
     console.error('DEBUG: error al consultar /api/v1/accounts ->', { status, data });
     res.status(status || 500).json({ ok: false, status, data });
+  }
+});
+
+// --- DEBUG: endpoint para intentar enviar mensaje a Chatwoot (solo para pruebas) ---
+app.get('/debug/send-test', async (req, res) => {
+  const accountId = req.query.accountId || CHATWOOT_ACCOUNT_ID;
+  const conversationId = req.query.conversationId;
+  const text = req.query.text || 'Mensaje de prueba desde backend';
+  if (!conversationId) return res.status(400).json({ error: 'conversationId query param required' });
+
+  const url = `${CHATWOOT_BASE.replace(/\/$/, '')}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
+  const payload = { content: text, message_type: 'outgoing' };
+  const maskToken = (t) => (typeof t === 'string' && t.length > 8) ? `${t.slice(0,6)}...${t.slice(-4)}` : '*****';
+  console.log('DEBUG: intentando enviar mensaje a Chatwoot ->', { url, accountId, conversationId, maskedToken: maskToken(CHATWOOT_API_TOKEN) });
+
+  try {
+    const headers = { Authorization: `Bearer ${CHATWOOT_API_TOKEN}`, 'Content-Type': 'application/json' };
+    const resp = await axios.post(url, payload, { headers, timeout: 15000 });
+    console.log('DEBUG: Chatwoot send response ->', { status: resp.status, dataPreview: resp.data && (typeof resp.data === 'object' ? (resp.data.id ? { id: resp.data.id } : resp.data) : resp.data) });
+    return res.json({ ok: true, status: resp.status, data: resp.data });
+  } catch (err) {
+    const status = err?.response?.status;
+    const data = err?.response?.data;
+    console.error('DEBUG: error al enviar mensaje ->', { status, data });
+    return res.status(status || 500).json({ ok: false, status, data });
   }
 });
 
