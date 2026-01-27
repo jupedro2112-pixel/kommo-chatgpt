@@ -59,7 +59,7 @@ const CHATWOOT_ACCOUNT_ID = process.env.CHATWOOT_ACCOUNT_ID || null;
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
 if (!OPENAI_API_KEY) console.error('❌ OPENAI_API_KEY no está definido en las variables de entorno.');
-if (!CHATWOOT_API_TOKEN) console.error('❌ CHATWOOT_API_TOKEN no está definido en las variables de entorno.');
+if (!CHATWOOT_API_TOKEN) console.warn('⚠️ CHATWOOT_API_TOKEN no está definido en las variables de entorno.');
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
 
@@ -182,42 +182,60 @@ function extractUsername(message) {
   return null;
 }
 
-// Chatwoot integration: send outgoing message (masked logging for debug)
-async function sendToChatwoot(accountId, conversationId, content) {
-  if (!CHATWOOT_API_TOKEN) {
-    console.error('❌ CHATWOOT_API_TOKEN no definido.');
-    return false;
-  }
+// sendToChatwoot: intenta account API, si falla y hay datos públicos en payload intenta public API del widget
+async function sendToChatwoot(accountId, conversationId, content, opts = {}) {
+  // opts puede contener: inboxId, contactSourceId, pubsubToken, webhookBody
   if (!conversationId) {
     console.warn('No conversationId provided; cannot send message to Chatwoot.');
     return false;
   }
   const acct = accountId || CHATWOOT_ACCOUNT_ID;
-  if (!acct) {
-    console.warn('No account id available to send message to Chatwoot.');
+
+  // Primero: intentar API de cuentas (requiere CHATWOOT_API_TOKEN)
+  if (CHATWOOT_API_TOKEN && acct) {
+    const url = `${CHATWOOT_BASE.replace(/\/$/, '')}/api/v1/accounts/${acct}/conversations/${conversationId}/messages`;
+    const payload = { content, message_type: 'outgoing' };
+    const headers = { Authorization: `Bearer ${CHATWOOT_API_TOKEN}`, 'Content-Type': 'application/json' };
+    try {
+      console.log('DEBUG: intentando account API ->', { url, acct, conversationId, hasToken: !!CHATWOOT_API_TOKEN });
+      const resp = await axios.post(url, payload, { headers, timeout: 15000 });
+      console.log('DEBUG: Chatwoot account API response ->', { status: resp.status, dataPreview: resp.data && (resp.data.id ? { id: resp.data.id } : resp.data) });
+      return resp.status >= 200 && resp.status < 300;
+    } catch (err) {
+      const status = err?.response?.status;
+      const data = err?.response?.data;
+      console.warn('DEBUG: account API fallo ->', { status, data });
+      // Si fallo por auth o recurso no encontrado, vamos al fallback
+    }
+  } else {
+    console.log('DEBUG: no hay CHATWOOT_API_TOKEN o accountId, saltando account API.');
+  }
+
+  // Fallback: intentar public API del widget si recibimos pubsub token / inbox/contact identifiers
+  const webhook = opts.webhookBody || {};
+  const inboxId = opts.inboxId || webhook.inbox?.id || webhook?.inbox?.identifier || webhook?.conversation?.inbox_id || webhook?.contact_inbox?.inbox_id;
+  // contact identifier: prefer source_id or contact id fields present in payload
+  const contactId = opts.contactSourceId || webhook.conversation?.contact_inbox?.source_id || webhook?.contact_inbox?.source_id || webhook?.sender?.id || webhook?.contact_inbox?.contact_id;
+  const pubsubToken = opts.pubsubToken || webhook.conversation?.contact_inbox?.pubsub_token || webhook.contact_inbox?.pubsub_token || webhook.conversation?.contact_inbox?.pubsubToken;
+
+  if (!inboxId || !contactId || !pubsubToken) {
+    console.warn('DEBUG: no hay datos suficientes para public API fallback (inboxId/contactId/pubsubToken).', { inboxId, contactId, hasPubsub: !!pubsubToken });
     return false;
   }
 
-  const url = `${CHATWOOT_BASE.replace(/\/$/, '')}/api/v1/accounts/${acct}/conversations/${conversationId}/messages`;
-  const payload = { content, message_type: 'outgoing' };
-
-  // Build headers and mask token for logs
-  const maskToken = (t) => (typeof t === 'string' && t.length > 8) ? `${t.slice(0,6)}...${t.slice(-4)}` : '*****';
-  const headers = { Authorization: `Bearer ${CHATWOOT_API_TOKEN}`, 'Content-Type': 'application/json' };
-
-  console.log('Enviando a Chatwoot:', { url, acct, conversationId, payloadPreview: (content && content.slice(0,120)), hasToken: !!CHATWOOT_API_TOKEN, maskedToken: maskToken(CHATWOOT_API_TOKEN), CHATWOOT_BASE });
+  const publicUrl = `${CHATWOOT_BASE.replace(/\/$/, '')}/public/api/v1/inboxes/${encodeURIComponent(inboxId)}/contacts/${encodeURIComponent(contactId)}/conversations/${encodeURIComponent(conversationId)}/messages`;
+  const publicPayload = { content, message_type: 'outgoing' };
+  const publicHeaders = { Authorization: `Bearer ${pubsubToken}`, 'Content-Type': 'application/json' };
 
   try {
-    const resp = await axios.post(url, payload, { headers, timeout: 15000 });
-    console.log('Chatwoot send response status:', resp.status, resp.data ? resp.data : '');
-    return resp.status >= 200 && resp.status < 300;
+    console.log('DEBUG: intentando public API ->', { publicUrl, inboxId, contactId, maskedPubsub: (pubsubToken && pubsubToken.length>8)? `${pubsubToken.slice(0,6)}...${pubsubToken.slice(-4)}` : '***' });
+    const presp = await axios.post(publicUrl, publicPayload, { headers: publicHeaders, timeout: 15000 });
+    console.log('DEBUG: Chatwoot public API response ->', { status: presp.status, dataPreview: presp.data && (presp.data.id ? { id: presp.data.id } : presp.data) });
+    return presp.status >= 200 && presp.status < 300;
   } catch (err) {
-    // Mostrar detalles del error recibido por Chatwoot (status y body si existen)
     const status = err?.response?.status;
     const data = err?.response?.data;
-    console.error('❌ Error sending message to Chatwoot:', { status, data });
-    // También imprimir la URL y headers (mask token) para verificar que se usó lo correcto
-    console.error('Request info debug:', { url, acct, conversationId, maskedToken: maskToken(CHATWOOT_API_TOKEN), CHATWOOT_BASE });
+    console.error('DEBUG: public API fallo ->', { status, data });
     return false;
   }
 }
@@ -272,7 +290,7 @@ app.post(['/', '/webhook-chatwoot'], (req, res) => {
       if (intent.type === 'chat') {
         const reply = await casinoChatResponse(text);
         console.log('Respuesta ChatGPT ->', reply);
-        const sent = await sendToChatwoot(accountId, conversationId, reply);
+        const sent = await sendToChatwoot(accountId, conversationId, reply, { webhookBody: body });
         if (!sent) console.warn('No se pudo enviar la respuesta a Chatwoot (ver logs).');
         return;
       }
@@ -283,7 +301,7 @@ app.post(['/', '/webhook-chatwoot'], (req, res) => {
       if (!username) {
         const ask = 'Estimado/a, por favor enviá exactamente tu nombre de usuario tal como figura en la plataforma para que lo confirme en nuestros registros.';
         console.log('Solicitando username ->', ask);
-        await sendToChatwoot(accountId, conversationId, ask);
+        await sendToChatwoot(accountId, conversationId, ask, { webhookBody: body });
         return;
       }
 
@@ -304,7 +322,7 @@ app.post(['/', '/webhook-chatwoot'], (req, res) => {
       if (foundRowIndex === -1) {
         const msg = `Estimado/a, no encontramos el usuario ${username} en nuestros registros. Por favor dirigite al canal principal donde realizás tus cargas para solicitar tu usuario correcto y volvé a intentarlo.`;
         console.log('Usuario no encontrado ->', msg);
-        await sendToChatwoot(accountId, conversationId, msg);
+        await sendToChatwoot(accountId, conversationId, msg, { webhookBody: body });
         return;
       }
 
@@ -312,7 +330,7 @@ app.post(['/', '/webhook-chatwoot'], (req, res) => {
       if (claimedCell.includes('reclam')) {
         const msg = `Estimado/a, según nuestros registros el reembolso para ${username} ya fue marcado como reclamado anteriormente. Si hay un error, contactanos por el canal principal con evidencia.`;
         console.log('Ya reclamado ->', msg);
-        await sendToChatwoot(accountId, conversationId, msg);
+        await sendToChatwoot(accountId, conversationId, msg, { webhookBody: body });
         return;
       }
 
@@ -325,13 +343,13 @@ app.post(['/', '/webhook-chatwoot'], (req, res) => {
       if (net <= 1) {
         const msg = `Estimado/a, hemos verificado tus movimientos y, según nuestros registros, no corresponde reembolso en este caso.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}`;
         console.log('No aplica reembolso ->', msg);
-        await sendToChatwoot(accountId, conversationId, msg);
+        await sendToChatwoot(accountId, conversationId, msg, { webhookBody: body });
         return;
       } else {
         const bonusStr = (net * 0.08).toFixed(2);
         const msg = `Estimado/a, confirmamos que corresponde un reembolso del 8% sobre tu neto. Monto: $${bonusStr}.\n\nDetalle:\n- Depósitos: $${depositsStr}\n- Retiros: $${withdrawalsStr}\n- Neto: $${netStr}`;
         console.log('Aplica reembolso ->', msg);
-        const sent = await sendToChatwoot(accountId, conversationId, msg);
+        const sent = await sendToChatwoot(accountId, conversationId, msg, { webhookBody: body });
         if (!sent) console.warn('No se pudo enviar la respuesta a Chatwoot (ver logs).');
 
         const rowNumber = 2 + foundRowIndex;
@@ -371,21 +389,18 @@ app.get('/debug/send-test', async (req, res) => {
   const text = req.query.text || 'Mensaje de prueba desde backend';
   if (!conversationId) return res.status(400).json({ error: 'conversationId query param required' });
 
-  const url = `${CHATWOOT_BASE.replace(/\/$/, '')}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
-  const payload = { content: text, message_type: 'outgoing' };
-  const maskToken = (t) => (typeof t === 'string' && t.length > 8) ? `${t.slice(0,6)}...${t.slice(-4)}` : '*****';
-  console.log('DEBUG: intentando enviar mensaje a Chatwoot ->', { url, accountId, conversationId, maskedToken: maskToken(CHATWOOT_API_TOKEN) });
-
+  // Usar la función sendToChatwoot para probar caminos (account API y fallback public)
   try {
-    const headers = { Authorization: `Bearer ${CHATWOOT_API_TOKEN}`, 'Content-Type': 'application/json' };
-    const resp = await axios.post(url, payload, { headers, timeout: 15000 });
-    console.log('DEBUG: Chatwoot send response ->', { status: resp.status, dataPreview: resp.data && (typeof resp.data === 'object' ? (resp.data.id ? { id: resp.data.id } : resp.data) : resp.data) });
-    return res.json({ ok: true, status: resp.status, data: resp.data });
+    const sent = await sendToChatwoot(accountId, conversationId, text, {
+      inboxId: req.query.inboxId,
+      contactSourceId: req.query.contactId,
+      pubsubToken: req.query.pubsubToken,
+      webhookBody: lastRequest?.body || {}
+    });
+    return res.json({ ok: true, sent });
   } catch (err) {
-    const status = err?.response?.status;
-    const data = err?.response?.data;
-    console.error('DEBUG: error al enviar mensaje ->', { status, data });
-    return res.status(status || 500).json({ ok: false, status, data });
+    console.error('DEBUG: error en /debug/send-test ->', err?.message || err);
+    return res.status(500).json({ ok: false, error: err?.message || err });
   }
 });
 
