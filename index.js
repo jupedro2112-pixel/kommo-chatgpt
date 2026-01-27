@@ -181,7 +181,7 @@ function extractUsername(message) {
   return null;
 }
 
-// Chatwoot integration: send outgoing message
+// Chatwoot integration: send outgoing message (masked logging for debug)
 async function sendToChatwoot(accountId, conversationId, content) {
   if (!CHATWOOT_API_TOKEN) {
     console.error('❌ CHATWOOT_API_TOKEN no definido.');
@@ -199,13 +199,24 @@ async function sendToChatwoot(accountId, conversationId, content) {
 
   const url = `${CHATWOOT_BASE.replace(/\/$/, '')}/api/v1/accounts/${acct}/conversations/${conversationId}/messages`;
   const payload = { content, message_type: 'outgoing' };
+
+  // Build headers and mask token for logs
+  const maskToken = (t) => (typeof t === 'string' && t.length > 8) ? `${t.slice(0,6)}...${t.slice(-4)}` : '*****';
   const headers = { Authorization: `Bearer ${CHATWOOT_API_TOKEN}`, 'Content-Type': 'application/json' };
+
+  console.log('Enviando a Chatwoot:', { url, acct, conversationId, payloadPreview: (content && content.slice(0,120)), hasToken: !!CHATWOOT_API_TOKEN, maskedToken: maskToken(CHATWOOT_API_TOKEN), CHATWOOT_BASE });
+
   try {
     const resp = await axios.post(url, payload, { headers, timeout: 15000 });
     console.log('Chatwoot send response status:', resp.status, resp.data ? resp.data : '');
     return resp.status >= 200 && resp.status < 300;
   } catch (err) {
-    console.error('❌ Error sending message to Chatwoot:', err?.response?.data || err.message || err);
+    // Mostrar detalles del error recibido por Chatwoot (status y body si existen)
+    const status = err?.response?.status;
+    const data = err?.response?.data;
+    console.error('❌ Error sending message to Chatwoot:', { status, data });
+    // También imprimir la URL y headers (mask token) para verificar que se usó lo correcto
+    console.error('Request info debug:', { url, acct, conversationId, maskedToken: maskToken(CHATWOOT_API_TOKEN), CHATWOOT_BASE });
     return false;
   }
 }
@@ -333,6 +344,23 @@ app.post(['/', '/webhook-chatwoot'], (req, res) => {
       console.error('❌ Error procesando webhook (background):', err?.message || err);
     }
   })();
+});
+
+// --- DEBUG: comprobar token Chatwoot (añadido) ---
+app.get('/debug/check-token', async (req, res) => {
+  try {
+    const url = `${CHATWOOT_BASE.replace(/\/$/, '')}/api/v1/accounts`;
+    console.log('DEBUG: comprobando token Chatwoot ->', { url, CHATWOOT_BASE, hasToken: !!CHATWOOT_API_TOKEN });
+    const headers = { Authorization: `Bearer ${CHATWOOT_API_TOKEN}` };
+    const resp = await axios.get(url, { headers, timeout: 15000 });
+    console.log('DEBUG: respuesta /api/v1/accounts ->', { status: resp.status, dataPreview: resp.data && (Array.isArray(resp.data) ? resp.data.map(a => ({ id: a.id, name: a.name })) : resp.data) });
+    res.json({ ok: true, status: resp.status, accounts: resp.data && (Array.isArray(resp.data) ? resp.data.map(a => ({ id: a.id, name: a.name })) : resp.data) });
+  } catch (err) {
+    const status = err?.response?.status;
+    const data = err?.response?.data;
+    console.error('DEBUG: error al consultar /api/v1/accounts ->', { status, data });
+    res.status(status || 500).json({ ok: false, status, data });
+  }
 });
 
 app.listen(PORT, () => {
