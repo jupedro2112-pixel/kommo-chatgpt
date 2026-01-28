@@ -29,9 +29,14 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-const PLATFORM_URL = "https://admin.agentesadmin.bet/api/";
+// --- URL CORREGIDA ---
+const PLATFORM_URL = "https://admin.agentesadmin.bet/api/"; 
 const PLATFORM_USER = process.env.PLATFORM_USER; 
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
+
+if (!PLATFORM_USER || !PLATFORM_PASS) {
+  console.error("❌ ERROR CRÍTICO: Faltan PLATFORM_USER o PLATFORM_PASS en variables de entorno.");
+}
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
 
@@ -46,41 +51,54 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA ==================
+// ================== INTEGRACIÓN PLATAFORMA (REAL) ==================
+
+// Configuración de Headers para parecer un navegador real
+const AXIOS_CONFIG = {
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+  }
+};
 
 async function getPlatformToken() {
-  console.log("🔄 Intentando LOGIN en plataforma...");
-  console.log(`👉 User: ${PLATFORM_USER}`);
-
+  console.log(`🔄 Intentando LOGIN en: ${PLATFORM_URL}`);
+  
   try {
     const form = new FormData();
     form.append('action', 'LOGIN');
     form.append('username', PLATFORM_USER);
     form.append('password', PLATFORM_PASS);
 
-    // INTENTO 1: URL ORIGINAL CON HEADERS ESTRICTOS
-    const resp = await axios.post(PLATFORM_URL, form, {
-      headers: { 
-        ...form.getHeaders(),
-        'Accept': 'application/json', // Forzamos JSON
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
-    });
+    // Combinamos headers de axios + los headers necesarios de FormData
+    const headers = { 
+        ...AXIOS_CONFIG.headers, 
+        ...form.getHeaders() 
+    };
 
-    // Detectar si sigue devolviendo HTML
-    if (typeof resp.data === 'string' && resp.data.trim().startsWith('<')) {
-        console.error("⚠️ La API devolvió HTML. URL Incorrecta.");
-        console.log("Muestra:", resp.data.substring(0, 100));
-        return null;
+    const resp = await axios.post(PLATFORM_URL, form, { headers });
+
+    // Intento de parseo por si la API devuelve string en vez de JSON
+    let data = resp.data;
+    if (typeof data === 'string') {
+        try { 
+            // A veces devuelven HTML sucio antes del JSON, intentamos limpiarlo si es necesario
+            if (data.includes('{')) {
+                const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
+                data = JSON.parse(jsonPart);
+            }
+        } catch(e) {}
     }
 
-    console.log("📩 Respuesta LOGIN:", JSON.stringify(resp.data));
+    // LOG DE RESPUESTA (Solo los primeros 200 caracteres para no llenar la pantalla)
+    const logData = typeof data === 'object' ? JSON.stringify(data) : String(data).substring(0, 200);
+    console.log("📩 Respuesta LOGIN:", logData);
 
-    if (resp.data && resp.data.success && resp.data.token) {
+    if (data && data.success && data.token) {
       console.log("✅ Token obtenido exitosamente.");
-      return resp.data.token;
+      return data.token;
     } else {
-      console.error("❌ Login falló. Datos incorrectos o formato inesperado.");
+      console.error("❌ Login falló. Respuesta inválida.");
       return null;
     }
   } catch (err) {
@@ -94,6 +112,7 @@ async function creditUserBalance(username, amount) {
   
   const token = await getPlatformToken();
   if (!token) {
+    console.error("❌ Abortando carga: No se pudo obtener Token.");
     return { success: false, error: 'Login Error' };
   }
 
@@ -104,22 +123,30 @@ async function creditUserBalance(username, amount) {
     form.append('username', username);
     form.append('amount', amount.toString());
 
-    console.log(`📤 Enviando solicitud DEPOSIT...`);
+    const headers = { 
+        ...AXIOS_CONFIG.headers, 
+        ...form.getHeaders() 
+    };
 
-    const resp = await axios.post(PLATFORM_URL, form, {
-      headers: { 
-        ...form.getHeaders(),
-        'Accept': 'application/json'
-      }
-    });
+    console.log(`📤 Enviando solicitud DEPOSIT para ${username}...`);
+    const resp = await axios.post(PLATFORM_URL, form, { headers });
 
-    console.log("📩 Respuesta DEPOSIT:", JSON.stringify(resp.data));
+    let data = resp.data;
+    if (typeof data === 'string' && data.includes('{')) {
+        try { 
+            const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
+            data = JSON.parse(jsonPart);
+        } catch(e) {}
+    }
 
-    if (resp.data && resp.data.success) {
+    console.log("📩 Respuesta DEPOSIT:", JSON.stringify(data));
+
+    if (data && data.success) {
       console.log(`✅ CARGA EXITOSA CONFIRMADA.`);
       return { success: true };
     } else {
-      return { success: false, error: resp.data.error || 'API devolvió false' };
+      console.error(`❌ La API respondió success: false`);
+      return { success: false, error: data.error || 'API devolvió false' };
     }
   } catch (err) {
     console.error("❌ ERROR HTTP DEPOSIT:", err.message);
@@ -234,7 +261,7 @@ async function generateCasualChat(message) {
         { role: 'user', content: message },
       ],
     });
-    return resp.data?.choices?.[0]?.message?.content || 'Hola. Indicame tu usuario para verificar.';
+    return resp.data?.choices?.[0]?.message?.content;
   } catch (err) { return 'Hola, por favor indicame tu usuario.'; }
 }
 
@@ -353,7 +380,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  // USUARIO CONOCIDO -> VERIFICAR Y CARGAR
   if (activeUsername) {
     console.log(`⚡ Procesando usuario conocido: ${activeUsername}`);
     const result = await checkUserInSheets(activeUsername);
@@ -386,7 +412,13 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  // BUSCAR USUARIO EN MENSAJE
+  // BÚSQUEDA EN MENSAJE
+  const msgLower = fullMessage.toLowerCase();
+  if (msgLower.includes('no') && (msgLower.includes('recuerdo') || msgLower.includes('se')) && msgLower.includes('usuario')) {
+      await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal.");
+      return;
+  }
+
   const extractedUser = extractUsername(fullMessage);
   if (extractedUser) {
     console.log(`⚡ Usuario en mensaje: ${extractedUser}`);
@@ -443,6 +475,7 @@ app.post('/webhook-chatwoot', (req, res) => {
   if (!messageBuffer.has(conversationId)) {
     messageBuffer.set(conversationId, { messages: [], timer: null });
   }
+
   const buffer = messageBuffer.get(conversationId);
   buffer.messages.push(content);
 
@@ -459,4 +492,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Debugger 2 Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Debugger Activo en puerto ${PORT}`));
