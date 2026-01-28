@@ -13,8 +13,9 @@ app.use(express.urlencoded({ extended: true }));
 
 // ================== MEMORIA ==================
 const messageBuffer = new Map(); 
-const userStates = new Map(); // { claimed: boolean, username: string, lastActivity: number }
+const userStates = new Map(); 
 
+// Limpieza de estados antiguos
 setInterval(() => {
   const now = Date.now();
   for (const [id, state] of userStates.entries()) {
@@ -40,6 +41,18 @@ const auth = new GoogleAuth({
   credentials: GOOGLE_CREDENTIALS,
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
+
+// ================== UTILIDAD DE TIEMPO (ARGENTINA) ==================
+function isClaimWindowOpen() {
+  // Calculamos la hora en Argentina (UTC -3)
+  const now = new Date();
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const argentinaTime = new Date(utc + (3600000 * -3));
+  const hour = argentinaTime.getHours();
+
+  // Abierto de 18:00 a 23:59
+  return hour >= 18 && hour <= 23;
+}
 
 // ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
@@ -102,7 +115,7 @@ async function updateChatwootContact(accountId, contactId, username) {
   }
 }
 
-// ================== UTILIDADES ==================
+// ================== UTILIDADES Y REGEX ==================
 function cleanHtml(html) {
   if (!html) return "";
   return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
@@ -111,12 +124,10 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
 
-// Verifica si un texto es un usuario válido para operar
 function isValidUsername(text) {
   if (!text) return false;
-  // Debe coincidir con el patrón de equipo O tener letras y números al final
   if (TEAM_USER_PATTERN.test(text)) return true;
-  if (/[a-z]+\d{3,}$/i.test(text)) return true; // fallback genérico (ej: pepe123)
+  if (/[a-z]+\d{3,}$/i.test(text)) return true; 
   return false;
 }
 
@@ -130,7 +141,6 @@ function extractUsername(message) {
   const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
   if (explicit) return explicit[1].toLowerCase();
 
-  // Tokenización estricta para evitar falsos positivos en charla
   const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso','bono','buenas','tardes','noches','tengo','plata','carga']);
   const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 4 && !STOPWORDS.has(t.toLowerCase()));
   
@@ -140,94 +150,104 @@ function extractUsername(message) {
   return null;
 }
 
-// ================== GENERADORES DE RESPUESTA CON IA ==================
+// ================== GENERADORES IA ==================
 
-// 1. CHAT CASUAL: El cliente saluda o pregunta, pero NO sabemos el usuario aún.
+// 1. CHAT GENERAL (Sin usuario identificado)
 async function generateCasualChat(message) {
   try {
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
-      temperature: 0.7,
+      temperature: 0.4, // Más serio
       messages: [
         { 
           role: 'system', 
-          content: `Sos "Soporte Casino", un agente humano, profesional y amable de Argentina.
+          content: `Sos un agente de casino virtual. Tu tono es SERIO, BREVE y PROFESIONAL.
           
-          TU OBJETIVO: Atender al cliente y eventualmente pedirle su usuario para verificar el reintegro del 8%.
+          INFORMACIÓN CLAVE:
+          - El reembolso es sobre el NETO DEL DÍA ANTERIOR (no digas "pérdidas").
+          - El horario de reclamo es estricto: 18:00 a 23:59hs.
           
-          DIRECTRICES:
-          - Respondé de forma natural, explicativa y educada.
-          - Si te dicen "Hola", saludá y preguntá en qué podés ayudar.
-          - Si preguntan por reembolsos, explicá que es un beneficio diario sobre pérdidas y pedí el usuario para verificar.
+          OBJETIVO:
+          - Si el cliente saluda, devolvé el saludo brevemente y pedí el usuario.
+          - Si pregunta cómo funciona, explicá brevemente lo del neto y el horario.
           - NUNCA des ejemplos de usuarios.
-          - Usá "vos", sé cálido.` 
+          - Si no recuerda el usuario, decile que escriba al WhatsApp principal.` 
         },
         { role: 'user', content: message },
       ],
     });
-    return resp.data?.choices?.[0]?.message?.content || '¡Hola! ¿Cómo estás? Para ayudarte con tu reintegro necesito tu usuario.';
-  } catch (err) { return 'Hola, por favor decime tu usuario para revisar.'; }
+    return resp.data?.choices?.[0]?.message?.content || 'Hola. Para verificar tu reembolso sobre el neto de ayer, necesito tu usuario.';
+  } catch (err) { return 'Hola, por favor indicame tu usuario.'; }
 }
 
-// 2. RESULTADO DE REVISIÓN: Ya revisamos Sheets, la IA redacta el resultado.
+// 2. RESULTADO VERIFICACIÓN
 async function generateCheckResult(username, status, data = {}) {
-  // status: 'not_found', 'claimed', 'no_balance', 'success'
-  let systemPrompt = `Sos un agente de casino amable. Estás hablando con el usuario "${username}".`;
+  let systemPrompt = `Sos un agente de casino profesional. Hablas con "${username}". Sé breve y directo.`;
 
-  if (status === 'not_found') {
-    systemPrompt += ` Buscaste su usuario y NO figura en la base de datos.
-    Pedile amablemente que verifique si lo escribió bien. Recordale que debe ser tal cual lo usa en la plataforma.`;
+  if (status === 'closed_window') {
+     systemPrompt += ` El cliente quiere reclamar pero el horario de atención es de 18:00 a 23:59hs.
+     Informale amablemente que el sistema está cerrado y que debe volver a las 18hs para reclamar el neto de ayer.`;
+  }
+  else if (status === 'not_found') {
+    systemPrompt += ` El usuario NO figura en la base de datos del día anterior.
+    Pedile que verifique si está bien escrito.`;
   } 
   else if (status === 'claimed') {
-    systemPrompt += ` El sistema indica que su reintegro YA FUE RECLAMADO hoy.
-    Informale esto amablemente. Decile que puede volver a intentar mañana.`;
+    systemPrompt += ` El sistema indica que ya reclamó su reembolso hoy.
+    Decile que ya fue procesado.`;
   } 
   else if (status === 'no_balance') {
-    systemPrompt += ` Verificaste su cuenta. Su Neto es ${data.net}. NO tiene saldo negativo suficiente para reintegro.
-    Explicaselo profesionalmente. Decile que siga probando suerte.`;
+    systemPrompt += ` Verificaste su cuenta. Su NETO del día anterior es ${data.net}.
+    Informale que no tiene saldo negativo suficiente para aplicar al reintegro.`;
   } 
   else if (status === 'success') {
-    systemPrompt += ` ¡BUENAS NOTICIAS! Le corresponde un reintegro.
-    Neto: ${data.net}. Reembolso a acreditar: ${data.bonus}.
-    Confirmale que ya se lo estás acreditando ahora mismo. Felicitalo.`;
+    systemPrompt += ` ÉXITO. Corresponde reintegro.
+    Neto del día anterior: ${data.net}.
+    Monto a acreditar (8%): ${data.bonus}.
+    Confirmale que se acredita ahora mismo.`;
   }
 
   try {
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
-      temperature: 0.7,
+      temperature: 0.4,
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: "Generá la respuesta para el cliente." },
+        { role: 'user', content: "Generá la respuesta." },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
-    if (status === 'success') return `¡Listo! Tenés un reintegro de $${data.bonus}. Ya se acredita.`;
-    return 'Tengo información sobre tu cuenta.';
+    if (status === 'success') return `Reintegro aprobado sobre neto de ayer. Monto: $${data.bonus}. Se acredita ahora.`;
+    return 'El sistema de reembolsos funciona de 18 a 00hs.';
   }
 }
 
-// 3. POST-VENTA: El cliente sigue hablando después de cobrar.
+// 3. POST-VENTA
 async function generateAfterCare(message, username) {
   try {
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
-      temperature: 0.7,
+      temperature: 0.5,
       messages: [
-        { role: 'system', content: `Sos agente de casino. Hablas con "${username}".
-        Ya cobró su reintegro hoy. Sé amable. Si pide más, decile que es diario.` },
+        { role: 'system', content: `Agente de casino profesional. Hablas con "${username}".
+        Ya cobró hoy. Si insiste, recordale que el beneficio es una vez por día sobre el neto de ayer.` },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'Cualquier cosa avisame. ¡Suerte!'; }
+  } catch (err) { return 'Tu reintegro ya fue procesado. Volvé mañana para el próximo.'; }
 }
 
-// ================== LÓGICA DE NEGOCIO (SHEETS) ==================
+// ================== LÓGICA DE NEGOCIO ==================
 async function checkUserInSheets(username) {
+  // VERIFICACIÓN DE HORARIO ANTES DE LEER SHEETS
+  if (!isClaimWindowOpen()) {
+    return { status: 'closed_window' };
+  }
+
   const lookupKey = username.toLowerCase().trim();
-  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg'; // Tu ID Real
+  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
   const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
   
   const foundIndices = [];
@@ -248,7 +268,6 @@ async function checkUserInSheets(username) {
     }
   }
 
-  // Resultado del análisis
   if (foundIndices.length === 0) return { status: 'not_found' };
 
   let alreadyClaimed = false;
@@ -270,72 +289,82 @@ async function checkUserInSheets(username) {
     bonus: (net * 0.08).toFixed(2), 
     username, 
     indices: foundIndices,
-    spreadsheetId // Retornamos ID para poder escribir después
+    spreadsheetId 
   };
 }
 
-// ================== PROCESAMIENTO CENTRAL ==================
+// ================== PROCESAMIENTO ==================
 async function processConversation(accountId, conversationId, contactId, contactName, fullMessage) {
   console.log(`🤖 Msg: "${fullMessage}" | ContactName: "${contactName}"`);
 
   let state = userStates.get(conversationId) || { claimed: false, username: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
   
-  // 1. REGLA DE ORO: ¿Ya tenemos el usuario identificado?
-  // Prioridad A: Ya lo guardamos en memoria (state)
-  // Prioridad B: El nombre del contacto en Chatwoot YA ES un usuario válido (Agenda previa)
+  // 1. Identificación automática por Agenda
   let activeUsername = state.username;
-
   if (!activeUsername && isValidUsername(contactName)) {
-    console.log(`✅ Usuario detectado por Agenda Chatwoot: ${contactName}`);
+    console.log(`✅ Usuario detectado por Agenda: ${contactName}`);
     activeUsername = contactName.toLowerCase();
-    // Actualizamos estado sin marcar claimed todavía, para que procese la lógica
     state.username = activeUsername;
   }
-
   userStates.set(conversationId, state);
 
-  // 2. Si ya cobró hoy (Estado en Memoria)
+  // 2. Si ya cobró hoy
   if (state.claimed && activeUsername) {
     const reply = await generateAfterCare(fullMessage, activeUsername);
     await sendReplyToChatwoot(accountId, conversationId, reply);
     return;
   }
 
-  // 3. Si TENEMOS usuario (por Agenda o por Estado), vamos DIRECTO a verificar
-  // No importa lo que diga el cliente ("Hola", "Reembolso"), si ya sabemos quién es, verificamos.
+  // 3. Usuario identificado (Agenda o Estado) -> Procesar Reclamo
   if (activeUsername) {
     console.log(`⚡ Procesando usuario conocido: ${activeUsername}`);
     const result = await checkUserInSheets(activeUsername);
     
-    // Generar respuesta explicativa con IA
+    // Si está cerrado el horario, avisamos pero NO marcamos como claimed para que vuelva después
+    if (result.status === 'closed_window') {
+        const reply = await generateCheckResult(activeUsername, 'closed_window');
+        await sendReplyToChatwoot(accountId, conversationId, reply);
+        return;
+    }
+
     const reply = await generateCheckResult(activeUsername, result.status, result);
     await sendReplyToChatwoot(accountId, conversationId, reply);
 
     if (result.status === 'success') {
-      // Marcar en sheets
       await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
-      // Actualizar estado memoria
       state.claimed = true;
       userStates.set(conversationId, state);
-      // (Opcional) Re-confirmar nombre en agenda por si acaso
+      // Re-confirmar agenda
       await updateChatwootContact(accountId, contactId, activeUsername);
     } else if (result.status === 'claimed' || result.status === 'no_balance') {
-      // Marcamos como "procesado" para no re-calcular a cada mensaje
       state.claimed = true; 
       userStates.set(conversationId, state);
     }
     return;
   }
 
-  // 4. Si NO tenemos usuario: CHARLA NORMAL
-  // Intentamos extraerlo del mensaje actual
+  // 4. Usuario NO identificado -> Charla para obtener usuario
+  
+  // Detección de "Olvidé usuario"
+  const msgLower = fullMessage.toLowerCase();
+  if (msgLower.includes('no') && (msgLower.includes('recuerdo') || msgLower.includes('se')) && msgLower.includes('usuario')) {
+      await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal para solicitarlo.");
+      return;
+  }
+
+  // Extracción del mensaje
   const extractedUser = extractUsername(fullMessage);
 
   if (extractedUser) {
-    // ¡Lo encontramos en el mensaje! Procesamos.
-    console.log(`⚡ Usuario encontrado en mensaje: ${extractedUser}`);
+    console.log(`⚡ Usuario en mensaje: ${extractedUser}`);
     const result = await checkUserInSheets(extractedUser);
+    
+    if (result.status === 'closed_window') {
+        const reply = await generateCheckResult(extractedUser, 'closed_window');
+        await sendReplyToChatwoot(accountId, conversationId, reply);
+        return;
+    }
     
     const reply = await generateCheckResult(extractedUser, result.status, result);
     await sendReplyToChatwoot(accountId, conversationId, reply);
@@ -353,8 +382,7 @@ async function processConversation(accountId, conversationId, contactId, contact
       userStates.set(conversationId, state);
     }
   } else {
-    // No sabemos quién es, ni lo dijo en el mensaje.
-    // RESPUESTA DE CHAT AMABLE (Humanizada)
+    // Charla casual (Pedir usuario)
     const reply = await generateCasualChat(fullMessage);
     await sendReplyToChatwoot(accountId, conversationId, reply);
   }
@@ -370,7 +398,7 @@ app.post('/webhook-chatwoot', (req, res) => {
   const conversationId = body.conversation?.id;
   const accountId = body.account?.id;
   const contactId = body.sender?.id;
-  const contactName = body.sender?.name || ''; // Nombre actual en la agenda
+  const contactName = body.sender?.name || ''; 
   const content = cleanHtml(body.content);
 
   if (!conversationId || !content) return;
@@ -384,7 +412,6 @@ app.post('/webhook-chatwoot', (req, res) => {
 
   if (buffer.timer) clearTimeout(buffer.timer);
 
-  // 3.5 segundos de "typing..." simulado
   buffer.timer = setTimeout(() => {
     const fullText = buffer.messages.join(" . ");
     messageBuffer.delete(conversationId);
@@ -397,4 +424,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 100% Humano Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino Profesional Activo en puerto ${PORT}`));
