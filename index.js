@@ -165,7 +165,7 @@ async function generateCasualChat(message) {
           
           INFORMACIÓN CLAVE:
           - El reembolso es sobre el NETO DEL DÍA ANTERIOR (no digas "pérdidas").
-          - El horario de reclamo es estricto: 18:00 a 23:59hs.
+          - El horario de reclamo es estricto: 13:00 a 23:59hs. (argentina)
           
           OBJETIVO:
           - Si el cliente saluda, devolvé el saludo brevemente y pedí el usuario.
