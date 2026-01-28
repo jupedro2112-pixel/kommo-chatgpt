@@ -11,19 +11,19 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ================== MEMORIA TEMPORAL ==================
-// 1. Buffer para acumular mensajes seguidos (Evita responder a cada frase)
+// ================== MEMORIA ==================
 const messageBuffer = new Map(); 
 
-// 2. Memoria de sesiones finalizadas (Para no dar reembolso 2 veces ni seguir charlando)
-const completedSessions = new Map(); 
+// Mapa de Estado del Usuario
+// Clave: conversationId
+// Valor: { username: "bigjose1010", claimed: boolean, lastActivity: number }
+const userStates = new Map();
 
-// Limpieza automática de memoria cada hora
+// Limpieza de memoria (borra estados de hace más de 24hs)
 setInterval(() => {
   const now = Date.now();
-  // Limpiar sesiones viejas (> 24hs)
-  for (const [id, time] of completedSessions.entries()) {
-    if (now - time > 24 * 60 * 60 * 1000) completedSessions.delete(id);
+  for (const [id, state] of userStates.entries()) {
+    if (now - state.lastActivity > 24 * 60 * 60 * 1000) userStates.delete(id);
   }
 }, 60 * 60 * 1000);
 
@@ -54,7 +54,7 @@ async function getSheetData(spreadsheetId, range) {
     const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
     return res.data.values || [];
   } catch (error) {
-    console.error('❌ Error leyendo Sheets:', error?.message);
+    console.error('❌ Error Sheets:', error?.message);
     return [];
   }
 }
@@ -80,12 +80,39 @@ async function markAllUserRowsAsClaimed(spreadsheetId, indices, columnLetter = '
   }
 }
 
-// ================== LÓGICA ==================
+// ================== LÓGICA DE USUARIOS (PREFIJOS) ==================
+// Regex poderosa para detectar equipos específicos
+// Busca: Inicio de palabra + (big|arg|cir...) + letras + numeros al final
+const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
+
+function extractUsername(message) {
+  if (!message) return null;
+  const m = message.trim();
+  
+  // 1. Prioridad TOTAL: Buscar patrón de equipo (ej: bigjose1010, marale707)
+  const teamMatch = m.match(TEAM_USER_PATTERN);
+  if (teamMatch) return teamMatch[0].toLowerCase();
+
+  // 2. Si no hay patrón de equipo, buscar explícitos "usuario: pepe"
+  const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
+  if (explicit) return explicit[1].toLowerCase();
+
+  // 3. Último recurso: Tokenización (solo si tiene números y longitud decente)
+  const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso','bono']);
+  const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 4 && !STOPWORDS.has(t.toLowerCase()));
+  
+  // Debe tener números para ser considerado user si no tiene prefijo conocido
+  const withNumbers = tokens.find(t => /\d/.test(t));
+  if (withNumbers) return withNumbers.toLowerCase();
+
+  return null;
+}
+
+// ================== UTILIDADES ==================
 function cleanHtml(html) {
   if (!html) return "";
   return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
 }
-
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function sendReplyToChatwoot(accountId, conversationId, message) {
@@ -103,15 +130,16 @@ async function sendReplyToChatwoot(accountId, conversationId, message) {
   }
 }
 
-// ================== INTELIGENCIA ==================
+// ================== INTELIGENCIA ARTIFICIAL ==================
 async function detectIntent(message) {
-  // Check rápido de "No sé mi usuario"
   const msgLower = message.toLowerCase();
-  if (
-    (msgLower.includes('no') && (msgLower.includes('se') || msgLower.includes('recuerdo') || msgLower.includes('acuerdo'))) &&
-    (msgLower.includes('usuario') || msgLower.includes('user'))
-  ) {
+  if (msgLower.includes('no') && (msgLower.includes('se') || msgLower.includes('acuerdo') || msgLower.includes('recuerdo')) && (msgLower.includes('usuario') || msgLower.includes('user'))) {
     return { type: 'forgot_username' };
+  }
+
+  // Si detectamos el patrón de equipo por Regex, es username seguro
+  if (TEAM_USER_PATTERN.test(message)) {
+    return { type: 'username' };
   }
 
   try {
@@ -121,10 +149,9 @@ async function detectIntent(message) {
       messages: [
         {
           role: 'system',
-          content: `Clasificador JSON. Tipos: "username", "chat", "forgot_username".
-          - Si dice "no recuerdo mi usuario", "no se mi usuario": "forgot_username".
-          - Si da un usuario (ej: marale707): "username".
-          - Si saluda o pregunta: "chat".`
+          content: `Clasificador JSON. Tipos: "username", "chat".
+          - Si contiene un usuario con formato de equipo (ej: bigjose1010, argpepe20, cirjuan99) -> "username".
+          - Si es saludo o pregunta -> "chat".`
         },
         { role: 'user', content: message },
       ],
@@ -134,6 +161,7 @@ async function detectIntent(message) {
   } catch (err) { return { type: 'chat' }; }
 }
 
+// CHAT 1: Cuando aún no sabemos el usuario
 async function casinoChatResponse(message) {
   try {
     const resp = await openai.createChatCompletion({
@@ -142,95 +170,96 @@ async function casinoChatResponse(message) {
       messages: [
         { 
           role: 'system', 
-          content: `Sos un agente de casino. Respondé MUY CORTO (máx 15 palabras).
-          Tu único objetivo es pedir el usuario para ver el reembolso.
-          Si saludan, pedí el usuario.` 
+          content: `Sos un agente de casino. Respuesta CORTA (max 15 palabras).
+          Tu OBJETIVO es pedir el usuario para ver el reembolso.
+          Si el usuario saluda, pedíle el usuario amablemente.` 
         },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content || '';
-  } catch (err) { return 'Por favor, decime tu usuario.'; }
+  } catch (err) { return 'Hola, por favor decime tu usuario para revisar tu reembolso.'; }
 }
 
-function extractUsername(message) {
-  if (!message) return null;
-  const m = message.trim();
-  const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso']);
-  
-  // Regex explícito
-  const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
-  if (explicit) return explicit[1];
-
-  // Tokenización
-  const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 3 && !STOPWORDS.has(t.toLowerCase()));
-  
-  // Si hay números, es muy probable que sea el user
-  const withNumbers = tokens.find(t => /\d/.test(t));
-  if (withNumbers) return withNumbers;
-
-  // Si queda solo uno, es ese
-  if (tokens.length === 1) return tokens[0];
-
-  return null;
+// CHAT 2: Cuando YA COBRÓ (Context aware)
+async function chatAfterClaim(message, username) {
+  try {
+    const resp = await openai.createChatCompletion({
+      model: 'gpt-4o-mini',
+      temperature: 0.7,
+      messages: [
+        { 
+          role: 'system', 
+          content: `Sos un agente de casino. Estás hablando con el usuario "${username}".
+          IMPORTANTE: Este usuario YA COBRÓ su reembolso de hoy.
+          - Si te saluda o charla, respondé amablemente y corto.
+          - Si vuelve a pedir plata o reembolso, decíle que ya se le acreditó hoy y que vuelva mañana.
+          - NO le pidas el usuario de nuevo (ya sabés quién es).` 
+        },
+        { role: 'user', content: message },
+      ],
+    });
+    return resp.data?.choices?.[0]?.message?.content || '';
+  } catch (err) { return 'Tu reembolso ya fue procesado hoy. ¡Cualquier otra duda estoy acá!'; }
 }
 
-// ================== PROCESAMIENTO CENTRAL (BUFFERED) ==================
+// ================== PROCESAMIENTO CENTRAL ==================
 async function processConversation(accountId, conversationId, fullMessage) {
-  console.log(`🤖 Procesando bloque: "${fullMessage}"`);
+  console.log(`🤖 Msg: "${fullMessage}"`);
 
-  // 1. CHEQUEO: ¿Ya terminamos con este cliente por hoy?
-  if (completedSessions.has(conversationId)) {
-    console.log('⛔ Usuario ya atendido hoy. Enviando mensaje de cierre.');
-    await sendReplyToChatwoot(accountId, conversationId, "Tu reclamo de hoy ya fue procesado. Podés volver a consultar tu reembolso diario mañana. ¡Saludos!");
+  // 1. Recuperar estado (¿Ya lo conocemos?)
+  let state = userStates.get(conversationId) || { claimed: false, username: null, lastActivity: Date.now() };
+  state.lastActivity = Date.now(); // Actualizar timestamp
+  userStates.set(conversationId, state);
+
+  // 2. CAMINO A: El usuario ya cobró hoy (Charla Post-Reembolso)
+  if (state.claimed && state.username) {
+    console.log(`🗣️ Usuario ${state.username} sigue charlando después de cobrar.`);
+    const reply = await chatAfterClaim(fullMessage, state.username);
+    await sendReplyToChatwoot(accountId, conversationId, reply);
     return;
   }
 
-  // 2. Detectar Intención
+  // 3. CAMINO B: Procesamiento Normal
   const intent = await detectIntent(fullMessage);
-  
-  // CASO A: Se olvidó el usuario
+
   if (intent.type === 'forgot_username') {
-    await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal de cargas. Ellos te darán el dato correcto para que vuelvas a reclamar aquí.");
+    await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, pedílo en nuestro WhatsApp de cargas principal.");
     return;
   }
 
-  // CASO B: Chat casual (sin usuario)
-  if (intent.type === 'chat') {
-    // Si GPT piensa que es chat, intentamos extraer user por si acaso
-    const possibleUser = extractUsername(fullMessage);
-    if (!possibleUser) {
-      const reply = await casinoChatResponse(fullMessage);
-      await sendReplyToChatwoot(accountId, conversationId, reply);
-      return;
-    }
-    // Si encontró user, seguimos abajo...
+  // Intentamos extraer usuario
+  const extractedUser = extractUsername(fullMessage);
+
+  // Si NO hay usuario y es chat casual
+  if (intent.type === 'chat' && !extractedUser) {
+    const reply = await casinoChatResponse(fullMessage);
+    await sendReplyToChatwoot(accountId, conversationId, reply);
+    return;
   }
 
-  // CASO C: Tenemos un usuario (o intento de)
-  const username = extractUsername(fullMessage);
+  // Si detectamos usuario (o GPT dijo username)
+  const username = extractedUser;
   
   if (!username) {
-    await sendReplyToChatwoot(accountId, conversationId, "Para verificar tu reembolso, necesito que escribas tu nombre de usuario exacto.");
+    await sendReplyToChatwoot(accountId, conversationId, "Necesito tu usuario exacto (ej: bigjuan10, argpepe20) para verificar.");
     return;
   }
 
-  console.log(`🔎 Buscando usuario: ${username}`);
+  console.log(`🔎 Verificando usuario: ${username}`);
   const lookupKey = username.toLowerCase().trim();
   
-  // Sheets
+  // Buscar en Sheets
   const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
   const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
   
   const foundIndices = [];
   let userTotals = { deposits: 0, withdrawals: 0 };
 
-  // Barrido de datos
   for (let i = 0; i < rows.length; i++) {
     const rowUser = String(rows[i][1] || '').toLowerCase().trim();
     if (rowUser === lookupKey) {
       foundIndices.push(i);
-      
       const type = String(rows[i][0] || '').toLowerCase();
       const amount = parseFloat(String(rows[i][2] || '0').replace(/[^0-9.-]/g, '')) || 0;
 
@@ -246,11 +275,11 @@ async function processConversation(accountId, conversationId, fullMessage) {
   }
 
   if (foundIndices.length === 0) {
-    await sendReplyToChatwoot(accountId, conversationId, `No encontré el usuario "${username}". Verificá que esté bien escrito (tal cual figura en la plataforma).`);
+    await sendReplyToChatwoot(accountId, conversationId, `No encontré el usuario "${username}". Revisá que empiece con el prefijo de tu equipo (big, arg, mar, etc) y termine con números.`);
     return;
   }
 
-  // Verificar si ya reclamó en ALGUNA fila
+  // Verificar si ya reclamó
   let yaReclamo = false;
   for (const idx of foundIndices) {
     if (String(rows[idx][4] || '').toLowerCase().includes('reclam')) {
@@ -260,9 +289,12 @@ async function processConversation(accountId, conversationId, fullMessage) {
   }
 
   if (yaReclamo) {
-    await sendReplyToChatwoot(accountId, conversationId, `El beneficio para ${username} ya fue reclamado hoy.`);
-    // Marcamos sesión como finalizada
-    completedSessions.set(conversationId, Date.now());
+    // Actualizamos estado local
+    state.claimed = true;
+    state.username = username;
+    userStates.set(conversationId, state);
+
+    await sendReplyToChatwoot(accountId, conversationId, `El reembolso para ${username} ya fue reclamado hoy.`);
     return;
   }
 
@@ -270,20 +302,23 @@ async function processConversation(accountId, conversationId, fullMessage) {
   const net = userTotals.deposits - userTotals.withdrawals;
   
   if (net <= 1) {
-    await sendReplyToChatwoot(accountId, conversationId, `No tenés saldo negativo suficiente para reintegro.\n\nNeto: $${net.toFixed(2)}`);
-    // También finalizamos sesión, porque ya se le dio la respuesta final
-    completedSessions.set(conversationId, Date.now());
+    // No aplica, pero guardamos que ya lo revisamos para no buscar de nuevo en 5 mins
+    state.claimed = true; // Tratamos como "claimed" para no volver a calcular, o podrías manejar un estado "checked"
+    state.username = username;
+    userStates.set(conversationId, state);
+
+    await sendReplyToChatwoot(accountId, conversationId, `No tenés saldo negativo para reintegro.\nNeto: $${net.toFixed(2)}`);
   } else {
     const bonus = (net * 0.08).toFixed(2);
-    const msg = `¡Reintegro aprobado!\n\nNeto: $${net.toFixed(2)}\nReembolso (8%): $${bonus}\n\nSe acreditará automáticamente en tu cuenta.`;
+    const msg = `¡Reintegro aprobado!\nNeto: $${net.toFixed(2)}\nReembolso (8%): $${bonus}\n\nSe acredita automáticamente.`;
     
     await sendReplyToChatwoot(accountId, conversationId, msg);
-    
-    // Marcar Sheets
     await markAllUserRowsAsClaimed(spreadsheetId, foundIndices);
     
-    // Finalizar sesión por hoy
-    completedSessions.set(conversationId, Date.now());
+    // Guardar estado exitoso
+    state.claimed = true;
+    state.username = username;
+    userStates.set(conversationId, state);
   }
 }
 
@@ -300,33 +335,26 @@ app.post('/webhook-chatwoot', (req, res) => {
 
   if (!conversationId || !content) return;
 
-  // LÓGICA DE BUFFER (Agrupa mensajes si llegan rápido)
+  // Lógica BUFFER (3 segundos)
   if (!messageBuffer.has(conversationId)) {
-    messageBuffer.set(conversationId, {
-      messages: [],
-      timer: null
-    });
+    messageBuffer.set(conversationId, { messages: [], timer: null });
   }
 
   const buffer = messageBuffer.get(conversationId);
   buffer.messages.push(content);
 
-  // Reiniciar timer
   if (buffer.timer) clearTimeout(buffer.timer);
 
-  // Esperar 3 segundos. Si no llega nada más, procesar.
   buffer.timer = setTimeout(() => {
-    const fullText = buffer.messages.join(" . "); // Unir mensajes
-    messageBuffer.delete(conversationId); // Limpiar buffer
+    const fullText = buffer.messages.join(" . ");
+    messageBuffer.delete(conversationId);
     
-    // Ejecutar lógica principal (Simulamos espera humana dentro)
     (async () => {
-      console.log(`⏳ Esperando 4s para responder a conv ${conversationId}...`);
-      await sleep(4000); 
+      console.log(`⏳ Procesando conv ${conversationId}...`);
+      await sleep(3000); // Pequeña espera humana
       await processConversation(accountId, conversationId, fullText);
     })();
-    
-  }, 3000); // 3 segundos de ventana para juntar mensajes
+  }, 3000);
 });
 
 app.listen(PORT, () => console.log(`🚀 Bot listo en puerto ${PORT}`));
