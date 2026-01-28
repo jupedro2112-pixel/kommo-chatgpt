@@ -42,18 +42,6 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== UTILIDAD DE TIEMPO (ARGENTINA) ==================
-function isClaimWindowOpen() {
-  // Calculamos la hora en Argentina (UTC -3)
-  const now = new Date();
-  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-  const argentinaTime = new Date(utc + (3600000 * -3));
-  const hour = argentinaTime.getHours();
-
-  // Abierto de 18:00 a 23:59
-  return hour >= 18 && hour <= 23;
-}
-
 // ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
   try {
@@ -157,19 +145,19 @@ async function generateCasualChat(message) {
   try {
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
-      temperature: 0.4, // Más serio
+      temperature: 0.4, // Serio y profesional
       messages: [
         { 
           role: 'system', 
           content: `Sos un agente de casino virtual. Tu tono es SERIO, BREVE y PROFESIONAL.
           
           INFORMACIÓN CLAVE:
-          - El reembolso es sobre el NETO DEL DÍA ANTERIOR (no digas "pérdidas").
-          - El horario de reclamo es estricto: 13:00 a 23:59hs. (argentina)
+          - El reembolso es sobre el NETO DEL DÍA ANTERIOR.
+          - Atención disponible las 24 horas.
           
           OBJETIVO:
           - Si el cliente saluda, devolvé el saludo brevemente y pedí el usuario.
-          - Si pregunta cómo funciona, explicá brevemente lo del neto y el horario.
+          - Si pregunta cómo funciona, explicá brevemente lo del neto de ayer.
           - NUNCA des ejemplos de usuarios.
           - Si no recuerda el usuario, decile que escriba al WhatsApp principal.` 
         },
@@ -184,11 +172,7 @@ async function generateCasualChat(message) {
 async function generateCheckResult(username, status, data = {}) {
   let systemPrompt = `Sos un agente de casino profesional. Hablas con "${username}". Sé breve y directo.`;
 
-  if (status === 'closed_window') {
-     systemPrompt += ` El cliente quiere reclamar pero el horario de atención es de 18:00 a 23:59hs.
-     Informale amablemente que el sistema está cerrado y que debe volver a las 18hs para reclamar el neto de ayer.`;
-  }
-  else if (status === 'not_found') {
+  if (status === 'not_found') {
     systemPrompt += ` El usuario NO figura en la base de datos del día anterior.
     Pedile que verifique si está bien escrito.`;
   } 
@@ -219,7 +203,7 @@ async function generateCheckResult(username, status, data = {}) {
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
     if (status === 'success') return `Reintegro aprobado sobre neto de ayer. Monto: $${data.bonus}. Se acredita ahora.`;
-    return 'El sistema de reembolsos funciona de 18 a 00hs.';
+    return 'Estoy verificando tu cuenta.';
   }
 }
 
@@ -241,10 +225,7 @@ async function generateAfterCare(message, username) {
 
 // ================== LÓGICA DE NEGOCIO ==================
 async function checkUserInSheets(username) {
-  // VERIFICACIÓN DE HORARIO ANTES DE LEER SHEETS
-  if (!isClaimWindowOpen()) {
-    return { status: 'closed_window' };
-  }
+  // NOTA: Se eliminó la restricción horaria isClaimWindowOpen(). Ahora es 24/7.
 
   const lookupKey = username.toLowerCase().trim();
   const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
@@ -321,13 +302,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     console.log(`⚡ Procesando usuario conocido: ${activeUsername}`);
     const result = await checkUserInSheets(activeUsername);
     
-    // Si está cerrado el horario, avisamos pero NO marcamos como claimed para que vuelva después
-    if (result.status === 'closed_window') {
-        const reply = await generateCheckResult(activeUsername, 'closed_window');
-        await sendReplyToChatwoot(accountId, conversationId, reply);
-        return;
-    }
-
     const reply = await generateCheckResult(activeUsername, result.status, result);
     await sendReplyToChatwoot(accountId, conversationId, reply);
 
@@ -335,7 +309,6 @@ async function processConversation(accountId, conversationId, contactId, contact
       await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
       state.claimed = true;
       userStates.set(conversationId, state);
-      // Re-confirmar agenda
       await updateChatwootContact(accountId, contactId, activeUsername);
     } else if (result.status === 'claimed' || result.status === 'no_balance') {
       state.claimed = true; 
@@ -359,12 +332,6 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (extractedUser) {
     console.log(`⚡ Usuario en mensaje: ${extractedUser}`);
     const result = await checkUserInSheets(extractedUser);
-    
-    if (result.status === 'closed_window') {
-        const reply = await generateCheckResult(extractedUser, 'closed_window');
-        await sendReplyToChatwoot(accountId, conversationId, reply);
-        return;
-    }
     
     const reply = await generateCheckResult(extractedUser, result.status, result);
     await sendReplyToChatwoot(accountId, conversationId, reply);
@@ -424,4 +391,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino Profesional Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 Activo en puerto ${PORT}`));
