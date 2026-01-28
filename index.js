@@ -29,13 +29,9 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-const PLATFORM_URL = "https://admin.agentesadmin.bet/api/admin/";
+const PLATFORM_URL = "https://admin.agentesadmin.bet/api/";
 const PLATFORM_USER = process.env.PLATFORM_USER; 
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
-
-if (!PLATFORM_USER || !PLATFORM_PASS) {
-  console.error("❌ ERROR CRÍTICO: Faltan PLATFORM_USER o PLATFORM_PASS en variables de entorno.");
-}
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
 
@@ -50,11 +46,11 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (CON LOGS) ==================
+// ================== INTEGRACIÓN PLATAFORMA ==================
 
 async function getPlatformToken() {
   console.log("🔄 Intentando LOGIN en plataforma...");
-  console.log(`👉 User: ${PLATFORM_USER} | URL: ${PLATFORM_URL}`);
+  console.log(`👉 User: ${PLATFORM_USER}`);
 
   try {
     const form = new FormData();
@@ -62,23 +58,33 @@ async function getPlatformToken() {
     form.append('username', PLATFORM_USER);
     form.append('password', PLATFORM_PASS);
 
+    // INTENTO 1: URL ORIGINAL CON HEADERS ESTRICTOS
     const resp = await axios.post(PLATFORM_URL, form, {
-      headers: { ...form.getHeaders() }
+      headers: { 
+        ...form.getHeaders(),
+        'Accept': 'application/json', // Forzamos JSON
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
     });
 
-    // LOG DE RESPUESTA CRUDA
-    console.log("📩 Respuesta LOGIN RAW:", JSON.stringify(resp.data));
+    // Detectar si sigue devolviendo HTML
+    if (typeof resp.data === 'string' && resp.data.trim().startsWith('<')) {
+        console.error("⚠️ La API devolvió HTML. URL Incorrecta.");
+        console.log("Muestra:", resp.data.substring(0, 100));
+        return null;
+    }
+
+    console.log("📩 Respuesta LOGIN:", JSON.stringify(resp.data));
 
     if (resp.data && resp.data.success && resp.data.token) {
       console.log("✅ Token obtenido exitosamente.");
       return resp.data.token;
     } else {
-      console.error("❌ Login falló. 'success' no es true o falta 'token'.");
+      console.error("❌ Login falló. Datos incorrectos o formato inesperado.");
       return null;
     }
   } catch (err) {
     console.error("❌ ERROR HTTP LOGIN:", err.message);
-    if (err.response) console.error("   Datos respuesta error:", err.response.data);
     return null;
   }
 }
@@ -88,14 +94,11 @@ async function creditUserBalance(username, amount) {
   
   const token = await getPlatformToken();
   if (!token) {
-    console.error("❌ Abortando carga: No se pudo obtener Token.");
     return { success: false, error: 'Login Error' };
   }
 
   try {
     const form = new FormData();
-    // Probamos 'DEPOSIT' como acción estándar. 
-    // Si falla, revisa los logs por si dice "Action not found"
     form.append('action', 'DEPOSIT'); 
     form.append('token', token);
     form.append('username', username);
@@ -104,21 +107,22 @@ async function creditUserBalance(username, amount) {
     console.log(`📤 Enviando solicitud DEPOSIT...`);
 
     const resp = await axios.post(PLATFORM_URL, form, {
-      headers: { ...form.getHeaders() }
+      headers: { 
+        ...form.getHeaders(),
+        'Accept': 'application/json'
+      }
     });
 
-    console.log("📩 Respuesta DEPOSIT RAW:", JSON.stringify(resp.data));
+    console.log("📩 Respuesta DEPOSIT:", JSON.stringify(resp.data));
 
     if (resp.data && resp.data.success) {
       console.log(`✅ CARGA EXITOSA CONFIRMADA.`);
       return { success: true };
     } else {
-      console.error(`❌ La API respondió success: false`);
       return { success: false, error: resp.data.error || 'API devolvió false' };
     }
   } catch (err) {
     console.error("❌ ERROR HTTP DEPOSIT:", err.message);
-    if (err.response) console.error("   Datos respuesta error:", err.response.data);
     return { success: false, error: err.message };
   }
 }
@@ -230,7 +234,7 @@ async function generateCasualChat(message) {
         { role: 'user', content: message },
       ],
     });
-    return resp.data?.choices?.[0]?.message?.content;
+    return resp.data?.choices?.[0]?.message?.content || 'Hola. Indicame tu usuario para verificar.';
   } catch (err) { return 'Hola, por favor indicame tu usuario.'; }
 }
 
@@ -366,7 +370,6 @@ async function processConversation(accountId, conversationId, contactId, contact
         state.claimed = true;
         userStates.set(conversationId, state);
       } else {
-        // ERROR API
         console.error(`❌ FALLÓ API CARGA: ${apiResult.error}`);
         const reply = await generateCheckResult(activeUsername, 'api_error', result);
         await sendReplyToChatwoot(accountId, conversationId, reply);
@@ -456,4 +459,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Debugger Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Debugger 2 Activo en puerto ${PORT}`));
