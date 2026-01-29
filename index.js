@@ -28,7 +28,8 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-const PLATFORM_URL = "https://admin.agentesadmin.bet/api/admin/"; 
+const ROOT_URL = "https://admin.agentesadmin.bet/";
+const API_URL = "https://admin.agentesadmin.bet/api/admin/"; 
 const PLATFORM_USER = process.env.PLATFORM_USER; 
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
@@ -50,70 +51,115 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (RÉPLICA EXACTA WINDOWS) ==================
+// ================== INTEGRACIÓN PLATAFORMA (BROWSER MIMIC) ==================
 
-// Helper para x-www-form-urlencoded
+// Helper para codificar datos como formulario web clásico
 function toFormUrlEncoded(data) {
     return Object.keys(data).map(key => {
         return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
     }).join('&');
 }
 
-// Cliente Axios idéntico a tu prueba exitosa
-const apiClient = axios.create({
-  baseURL: PLATFORM_URL,
-  maxRedirects: 0,
-  validateStatus: function (status) { return status >= 200 && status < 500; },
-  headers: {
-    'Host': 'admin.agentesadmin.bet',
-    'Connection': 'keep-alive',
-    'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-    'Accept': 'application/json, text/plain, */*',
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Origin': 'https://admin.agentesadmin.bet',
-    'Referer': 'https://admin.agentesadmin.bet/',
-  }
+// Almacén de cookies en memoria
+let SESSION_COOKIES = [];
+
+function saveCookies(response) {
+    const raw = response.headers['set-cookie'];
+    if (raw) {
+        raw.forEach(cookieLine => {
+            const cookie = cookieLine.split(';')[0];
+            // Actualizar o agregar
+            const cookieName = cookie.split('=')[0];
+            const existingIndex = SESSION_COOKIES.findIndex(c => c.startsWith(cookieName + '='));
+            if (existingIndex >= 0) {
+                SESSION_COOKIES[existingIndex] = cookie;
+            } else {
+                SESSION_COOKIES.push(cookie);
+            }
+        });
+        console.log("🍪 Cookies actualizadas:", SESSION_COOKIES);
+    }
+}
+
+// Cliente base con headers de Chrome real
+const client = axios.create({
+    withCredentials: true,
+    maxRedirects: 0, // Importante: No seguir redirecciones (detectar bloqueo)
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'es-ES,es;q=0.9',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Origin': 'https://admin.agentesadmin.bet',
+        'Referer': 'https://admin.agentesadmin.bet/',
+        'X-Requested-With': 'XMLHttpRequest', // Critico para evitar HTML
+    }
 });
 
-let SESSION_COOKIE = null;
+// 1. OBTENER SESIÓN INICIAL (Visita la home)
+async function warmUp() {
+    console.log("🔥 [API] Visitando página de inicio para obtener cookies...");
+    try {
+        const resp = await client.get(ROOT_URL, {
+            headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none'
+            }
+        });
+        saveCookies(resp);
+    } catch (err) {
+        // A veces da error si redirige, pero igual manda cookies
+        if (err.response) saveCookies(err.response);
+        else console.error("⚠️ Error WarmUp:", err.message);
+    }
+}
 
-// Función para obtener Login + Tu ID de Admin
+// 2. LOGIN
 async function performLogin() {
-    console.log("🔄 [API] Ejecutando Login...");
+    if (SESSION_COOKIES.length === 0) await warmUp();
+
+    console.log("🔄 [API] Logueando...");
     
     try {
-        const body = toFormUrlEncoded({ 
-            action: 'LOGIN', 
-            username: PLATFORM_USER, 
-            password: PLATFORM_PASS 
+        const body = toFormUrlEncoded({
+            action: 'LOGIN',
+            username: PLATFORM_USER,
+            password: PLATFORM_PASS
         });
 
-        // Agregamos cookie si ya existe
-        const headers = {};
-        if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
+        const resp = await client.post(API_URL, body, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Cookie': SESSION_COOKIES.join('; ')
+            }
+        });
 
-        const resp = await apiClient.post('', body, { headers });
-
-        // Guardar/Actualizar Cookie
-        if (resp.headers['set-cookie']) {
-            SESSION_COOKIE = resp.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
-        }
+        saveCookies(resp);
 
         let data = resp.data;
-        if (typeof data === 'string') {
+        // Limpieza si devuelve string JSON sucio
+        if (typeof data === 'string' && data.includes('{')) {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+        }
+
+        // Si devuelve HTML es un bloqueo
+        if (typeof data === 'string' && data.trim().startsWith('<')) {
+            console.error("❌ [API] Bloqueo detectado (HTML). Intentando reiniciar cookies...");
+            SESSION_COOKIES = []; // Limpiamos para intentar de nuevo la próxima
+            return null;
         }
 
         if (data && data.success && data.token) {
             console.log("✅ [API] Login OK.");
-            return { 
-                token: data.token, 
-                adminId: data.user ? data.user.user_id : null 
-            };
+            return { token: data.token, adminId: data.user?.user_id };
         }
         
-        console.error("❌ [API] Login falló:", data);
+        console.error("❌ [API] Login falló datos:", data);
         return null;
     } catch (err) {
         console.error("❌ [API] Error Login:", err.message);
@@ -121,42 +167,41 @@ async function performLogin() {
     }
 }
 
-// Función Búsqueda exacta (Con los parámetros mágicos tree/parentid)
+// 3. BUSCAR ID
 async function getUserIdByName(token, adminId, targetUsername) {
-    console.log(`🔎 [API] Buscando usuario: ${targetUsername} (AdminID: ${adminId})...`);
-    
+    console.log(`🔎 [API] Buscando ${targetUsername}...`);
     try {
         const body = toFormUrlEncoded({
-            action: 'ShowUsers',       // Mayúsculas importantes
+            action: 'ShowUsers',
             token: token,
             page: 1,
             pagesize: 30,
-            viewtype: 'tree',          // CLAVE
+            viewtype: 'tree',
             username: targetUsername,
             showhidden: 'false',
-            parentid: adminId          // CLAVE
+            parentid: adminId
         });
 
-        const headers = {};
-        if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
-
-        const resp = await apiClient.post('', body, { headers });
-
+        const resp = await client.post(API_URL, body, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Cookie': SESSION_COOKIES.join('; ')
+            }
+        });
+        
         let data = resp.data;
-        if (typeof data === 'string') {
+        if (typeof data === 'string' && data.includes('{')) {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
         }
 
         const list = data.users || data.data || (Array.isArray(data) ? data : []);
-        
         const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
 
         if (found && found.user_id) {
-            console.log(`✅ [API] Encontrado ID: ${found.user_id}`);
+            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
             return found.user_id;
         }
-        
-        console.error(`❌ [API] No encontrado. Lista recibida: ${list.length} usuarios.`);
+        console.error(`❌ [API] Usuario no encontrado.`);
         return null;
     } catch (err) {
         console.error("❌ [API] Error Búsqueda:", err.message);
@@ -164,23 +209,18 @@ async function getUserIdByName(token, adminId, targetUsername) {
     }
 }
 
-// Función Principal de Carga
+// 4. DEPOSITAR
 async function creditUserBalance(username, amount) {
-    console.log(`💰 [API] Proceso de carga: $${amount} a ${username}`);
+    console.log(`💰 [API] Cargando $${amount} a ${username}`);
     
-    // 1. LOGIN
+    // Login fresco
     const loginData = await performLogin();
-    if (!loginData || !loginData.token || !loginData.adminId) {
-        return { success: false, error: 'Login Failed or No Admin ID' };
-    }
+    if (!loginData) return { success: false, error: 'Login Blocked/Failed' };
 
-    // 2. BUSCAR USUARIO
+    // Buscar ID
     const childId = await getUserIdByName(loginData.token, loginData.adminId, username);
-    if (!childId) {
-        return { success: false, error: 'User Not Found in Tree' };
-    }
+    if (!childId) return { success: false, error: 'User Not Found' };
 
-    // 3. DEPOSITAR
     try {
         const amountCents = Math.round(parseFloat(amount) * 100);
         
@@ -192,13 +232,15 @@ async function creditUserBalance(username, amount) {
             currency: PLATFORM_CURRENCY
         });
 
-        const headers = {};
-        if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
-
-        const resp = await apiClient.post('', body, { headers });
+        const resp = await client.post(API_URL, body, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Cookie': SESSION_COOKIES.join('; ')
+            }
+        });
 
         let data = resp.data;
-        if (typeof data === 'string') {
+        if (typeof data === 'string' && data.includes('{')) {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
         }
 
@@ -335,7 +377,7 @@ async function generateCheckResult(username, status, data = {}) {
   } else if (status === 'no_balance') {
     systemPrompt += ` Neto ayer: ${data.net}. No tiene saldo negativo suficiente para reintegro.`;
   } else if (status === 'success') {
-    systemPrompt += ` ��XITO TOTAL. Reintegro ACREDITADO REALMENTE en su cuenta.
+    systemPrompt += ` ÉXITO TOTAL. Reintegro ACREDITADO REALMENTE en su cuenta.
     Neto ayer: ${data.net}.
     Monto acreditado: ${data.bonus}.
     Confirmale que YA TIENE LA PLATA en su usuario y puede jugar.`;
@@ -371,53 +413,6 @@ async function generateAfterCare(message, username) {
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) { return 'Tu reintegro ya está listo. Volvé mañana.'; }
-}
-
-// ================== NEGOCIO ==================
-async function checkUserInSheets(username) {
-  const lookupKey = username.toLowerCase().trim();
-  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
-  const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
-  
-  const foundIndices = [];
-  let userTotals = { deposits: 0, withdrawals: 0 };
-
-  for (let i = 0; i < rows.length; i++) {
-    const rowUser = String(rows[i][1] || '').toLowerCase().trim();
-    if (rowUser === lookupKey) {
-      foundIndices.push(i);
-      const type = String(rows[i][0] || '').toLowerCase();
-      const amount = parseFloat(String(rows[i][2] || '0').replace(/[^0-9.-]/g, '')) || 0;
-      if (type.includes('deposit') || type.includes('depósito') || type.includes('carga')) {
-        userTotals.deposits += amount;
-      } else if (type.includes('withdraw') || type.includes('retiro') || type.includes('retir')) {
-        userTotals.withdrawals += amount;
-      }
-    }
-  }
-
-  if (foundIndices.length === 0) return { status: 'not_found' };
-
-  let alreadyClaimed = false;
-  for (const idx of foundIndices) {
-    if (String(rows[idx][4] || '').toLowerCase().includes('reclam')) {
-      alreadyClaimed = true;
-      break;
-    }
-  }
-  if (alreadyClaimed) return { status: 'claimed', username };
-
-  const net = userTotals.deposits - userTotals.withdrawals;
-  if (net <= 1) return { status: 'no_balance', net: net.toFixed(2), username, indices: foundIndices };
-
-  return { 
-    status: 'success', 
-    net: net.toFixed(2), 
-    bonus: (net * 0.08).toFixed(2), 
-    username, 
-    indices: foundIndices,
-    spreadsheetId 
-  };
 }
 
 // ================== PROCESAMIENTO ==================
@@ -549,4 +544,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Replica Exacta) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Session + Cookies) Activo en puerto ${PORT}`));
