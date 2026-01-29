@@ -29,8 +29,8 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-// --- URL CORREGIDA ---
-const PLATFORM_URL = "https://admin.agentesadmin.bet/api/"; 
+// URL CONFIRMADA
+const PLATFORM_URL = "https://admin.agentesadmin.bet/api/admin/"; 
 const PLATFORM_USER = process.env.PLATFORM_USER; 
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
 
@@ -51,18 +51,16 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (REAL) ==================
+// ================== INTEGRACIÓN PLATAFORMA ==================
 
-// Configuración de Headers para parecer un navegador real
-const AXIOS_CONFIG = {
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-  }
+// Configuración base para Axios (Headers para evitar bloqueos WAF)
+const BASE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+  'Accept': 'application/json',
 };
 
 async function getPlatformToken() {
-  console.log(`🔄 Intentando LOGIN en: ${PLATFORM_URL}`);
+  console.log(`🔄 [API] Iniciando Login en ${PLATFORM_URL}...`);
   
   try {
     const form = new FormData();
@@ -70,50 +68,48 @@ async function getPlatformToken() {
     form.append('username', PLATFORM_USER);
     form.append('password', PLATFORM_PASS);
 
-    // Combinamos headers de axios + los headers necesarios de FormData
     const headers = { 
-        ...AXIOS_CONFIG.headers, 
+        ...BASE_HEADERS, 
         ...form.getHeaders() 
     };
 
     const resp = await axios.post(PLATFORM_URL, form, { headers });
 
-    // Intento de parseo por si la API devuelve string en vez de JSON
+    // Manejo de respuesta
     let data = resp.data;
+    
+    // Si la API devuelve string sucio (a veces pasa en sistemas legacy)
     if (typeof data === 'string') {
         try { 
-            // A veces devuelven HTML sucio antes del JSON, intentamos limpiarlo si es necesario
-            if (data.includes('{')) {
+             if (data.includes('{')) {
                 const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
                 data = JSON.parse(jsonPart);
-            }
+             }
         } catch(e) {}
     }
 
-    // LOG DE RESPUESTA (Solo los primeros 200 caracteres para no llenar la pantalla)
-    const logData = typeof data === 'object' ? JSON.stringify(data) : String(data).substring(0, 200);
-    console.log("📩 Respuesta LOGIN:", logData);
+    // Log seguro (sin mostrar password)
+    console.log("📩 [API] Login Response:", data.success ? "SUCCESS" : JSON.stringify(data));
 
     if (data && data.success && data.token) {
-      console.log("✅ Token obtenido exitosamente.");
       return data.token;
     } else {
-      console.error("❌ Login falló. Respuesta inválida.");
+      console.error("❌ [API] Login falló:", data);
       return null;
     }
   } catch (err) {
-    console.error("❌ ERROR HTTP LOGIN:", err.message);
+    console.error("❌ [API] Error HTTP Login:", err.message);
+    if (err.response) console.error("   Status:", err.response.status, err.response.data);
     return null;
   }
 }
 
 async function creditUserBalance(username, amount) {
-  console.log(`💰 [INICIO CARGA] Usuario: ${username} | Monto: ${amount}`);
+  console.log(`💰 [API] Intentando cargar $${amount} a ${username}`);
   
   const token = await getPlatformToken();
   if (!token) {
-    console.error("❌ Abortando carga: No se pudo obtener Token.");
-    return { success: false, error: 'Login Error' };
+    return { success: false, error: 'Login Failed - Check Credentials' };
   }
 
   try {
@@ -124,11 +120,10 @@ async function creditUserBalance(username, amount) {
     form.append('amount', amount.toString());
 
     const headers = { 
-        ...AXIOS_CONFIG.headers, 
+        ...BASE_HEADERS, 
         ...form.getHeaders() 
     };
 
-    console.log(`📤 Enviando solicitud DEPOSIT para ${username}...`);
     const resp = await axios.post(PLATFORM_URL, form, { headers });
 
     let data = resp.data;
@@ -139,17 +134,17 @@ async function creditUserBalance(username, amount) {
         } catch(e) {}
     }
 
-    console.log("📩 Respuesta DEPOSIT:", JSON.stringify(data));
+    console.log("📩 [API] Deposit Response:", JSON.stringify(data));
 
     if (data && data.success) {
-      console.log(`✅ CARGA EXITOSA CONFIRMADA.`);
+      console.log(`✅ [API] Carga Exitosa para ${username}`);
       return { success: true };
     } else {
-      console.error(`❌ La API respondió success: false`);
-      return { success: false, error: data.error || 'API devolvió false' };
+      console.error(`❌ [API] Carga Rechazada:`, data);
+      return { success: false, error: data.error || 'Unknown API Error' };
     }
   } catch (err) {
-    console.error("❌ ERROR HTTP DEPOSIT:", err.message);
+    console.error("❌ [API] Error HTTP Deposit:", err.message);
     return { success: false, error: err.message };
   }
 }
@@ -392,7 +387,6 @@ async function processConversation(accountId, conversationId, contactId, contact
         await sendReplyToChatwoot(accountId, conversationId, reply);
         await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
         await updateChatwootContact(accountId, contactId, activeUsername);
-        
         state.claimed = true;
         userStates.set(conversationId, state);
       } else {
@@ -412,7 +406,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  // BÚSQUEDA EN MENSAJE
   const msgLower = fullMessage.toLowerCase();
   if (msgLower.includes('no') && (msgLower.includes('recuerdo') || msgLower.includes('se')) && msgLower.includes('usuario')) {
       await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal.");
@@ -432,7 +425,6 @@ async function processConversation(accountId, conversationId, contactId, contact
           await sendReplyToChatwoot(accountId, conversationId, reply);
           await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
           await updateChatwootContact(accountId, contactId, extractedUser);
-          
           state.claimed = true;
           state.username = extractedUser;
           userStates.set(conversationId, state);
@@ -451,7 +443,6 @@ async function processConversation(accountId, conversationId, contactId, contact
       }
     }
   } else {
-    // CHARLA CASUAL
     const reply = await generateCasualChat(fullMessage);
     await sendReplyToChatwoot(accountId, conversationId, reply);
   }
@@ -492,4 +483,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Debugger Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 Activo en puerto ${PORT}`));
