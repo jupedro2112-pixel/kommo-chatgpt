@@ -1,13 +1,10 @@
 require('dotenv').config();
 const express = require('express');
-const axios = require('axios'); // Mantenemos axios solo para Chatwoot
+const axios = require('axios'); // Solo para Chatwoot
 const FormData = require('form-data');
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
-
-// Si usas Node < 18 descomenta la linea de abajo e instala node-fetch
-// const fetch = require('node-fetch'); 
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -54,17 +51,17 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (FETCH NATIVO) ==================
+// ================== INTEGRACIÓN PLATAFORMA (CORREGIDO HEADERS) ==================
 
-// Headers exactos de tu prueba CURL exitosa
-const FETCH_HEADERS = {
+const COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Origin': 'https://admin.agentesadmin.bet',
-    'Referer': 'https://admin.agentesadmin.bet/'
+    'Referer': 'https://admin.agentesadmin.bet/',
+    'Accept': 'application/json, text/plain, */*' // Importante pedir JSON explícitamente
 };
 
 async function getPlatformToken() {
-  console.log(`🔄 [API] Login (Fetch)...`);
+  console.log(`🔄 [API] Login...`);
   
   try {
     const form = new FormData();
@@ -72,19 +69,21 @@ async function getPlatformToken() {
     form.append('username', PLATFORM_USER);
     form.append('password', PLATFORM_PASS);
 
-    // Usamos fetch nativo en lugar de axios para replicar mejor al curl
+    // CORRECCIÓN CRÍTICA: Combinamos headers manuales + headers del form (boundary)
+    const combinedHeaders = {
+        ...COMMON_HEADERS,
+        ...form.getHeaders() // <--- ESTO FALTABA EN LA VERSIÓN FETCH ANTERIOR
+    };
+
     const response = await fetch(PLATFORM_URL, {
         method: 'POST',
-        headers: {
-            ...FETCH_HEADERS,
-            // FormData calcula sus propios headers (boundary), no los sobreescribimos manualmente aquí
-        },
+        headers: combinedHeaders,
         body: form
     });
 
     const text = await response.text();
     
-    // Intentamos limpiar JSON sucio
+    // Parseo de respuesta
     let data = text;
     if (typeof data === 'string' && data.includes('{')) {
         try { 
@@ -93,9 +92,9 @@ async function getPlatformToken() {
         } catch(e) {}
     }
 
-    // Si data sigue siendo string, falló el parseo
+    // Si sigue siendo string HTML, mostramos el inicio para debug
     if (typeof data === 'string') {
-        console.log("📩 [API] Login Response Raw (Preview):", data.substring(0, 100));
+        console.log("📩 [API] Respuesta HTML Inesperada:", data.substring(0, 150));
         return null;
     }
 
@@ -121,9 +120,14 @@ async function getUserIdByName(token, targetUsername) {
     form.append('token', token);
     form.append('username', targetUsername);
 
+    const combinedHeaders = {
+        ...COMMON_HEADERS,
+        ...form.getHeaders()
+    };
+
     const response = await fetch(PLATFORM_URL, {
         method: 'POST',
-        headers: FETCH_HEADERS,
+        headers: combinedHeaders,
         body: form
     });
 
@@ -169,9 +173,14 @@ async function creditUserBalance(username, amount) {
     form.append('amount', amountCents);
     form.append('currency', PLATFORM_CURRENCY);
 
+    const combinedHeaders = {
+        ...COMMON_HEADERS,
+        ...form.getHeaders()
+    };
+
     const response = await fetch(PLATFORM_URL, {
         method: 'POST',
-        headers: FETCH_HEADERS,
+        headers: combinedHeaders,
         body: form
     });
 
