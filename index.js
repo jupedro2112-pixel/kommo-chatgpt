@@ -241,211 +241,60 @@ function extractUsername(message) {
 }
 
 // ================== IA GENERATORS ==================
-async function generateCasualChat(message) {
-  try {
-    const resp = await openai.createChatCompletion({
-      model: 'gpt-4o-mini',
-      temperature: 0.4,
-      messages: [
-        { 
-          role: 'system', 
-          content: `Sos un agente de casino virtual. Tono: SERIO, BREVE y PROFESIONAL.
-          Reembolso = Neto día anterior. Horario 24hs.
-          Si saluda, devolvé saludo y pedí usuario. NUNCA des ejemplos.` 
-        },
-        { role: 'user', content: message },
-      ],
-    });
-    return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'Hola, por favor indicame tu usuario.'; }
-}
-
-async function generateCheckResult(username, status, data = {}) {
-  let systemPrompt = `Sos agente de casino. Usuario: "${username}". Sé breve.`;
-
-  if (status === 'not_found') {
-    systemPrompt += ` Usuario NO encontrado en base de ayer. Pedile que verifique escritura.`;
-  } else if (status === 'claimed') {
-    systemPrompt += ` Ya reclamó hoy. Decile que ya fue procesado.`;
-  } else if (status === 'no_balance') {
-    systemPrompt += ` Neto ayer: ${data.net}. No tiene saldo negativo suficiente para reintegro.`;
-  } else if (status === 'success') {
-    systemPrompt += ` ÉXITO TOTAL. Reintegro ACREDITADO REALMENTE en su cuenta.
-    Neto ayer: ${data.net}.
-    Monto acreditado: ${data.bonus}.
-    Confirmale que YA TIENE LA PLATA en su usuario y puede jugar.`;
-  } else if (status === 'api_error') {
-     systemPrompt += ` Hubo un error técnico al acreditar. Pedile que espere y contacte a soporte humano.`;
-  }
+async function generateSalesReply(userMessage, agentName) {
+  const systemPrompt = `
+    Sos ${agentName}, una experta vendedora de cortinas y decoración de interiores.
+    
+    TUS INSTRUCCIONES:
+    1. TONO: Profesional, serio pero amable. Sos Argentina, usá modismos locales sutiles (viste, claro, te comento) pero mantene la formalidad de un negocio.
+    2. OBJETIVO: Cerrar la venta. Asesorar sobre telas (Blackout, Sunscreen, Voile, Lino), sistemas (Roller, Bandas Verticales, Rieles) y medidas.
+    3. IDENTIDAD: Actúa siempre como humana. NUNCA menciones que sos una IA o ChatGPT. Si te preguntan algo fuera de tema, redirigí la charla a las cortinas educadamente.
+    4. ACCIÓN: Pedí medidas (ancho x alto) si no las tenés. Ofrecé presupuesto. Preguntá qué tipo de ambiente quieren oscurecer o decorar.
+    
+    Recordá: Tu nombre es ${agentName}.
+  `;
 
   try {
     const resp = await openai.createChatCompletion({
-      model: 'gpt-4o-mini',
-      temperature: 0.4,
+      model: 'gpt-4o-mini', // O gpt-3.5-turbo según tu plan
+      temperature: 0.3, // Temperatura baja para ser más seria y consistente
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: "Generá respuesta." },
+        { role: 'user', content: userMessage },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
-    if (status === 'success') return `Listo. Te cargué $${data.bonus}.`;
-    return 'Verificando...';
+    console.error("❌ Error OpenAI:", err.message);
+    return "Disculpá, estoy verificando el stock. ¿Podrías repetirme la consulta?";
   }
-}
-
-async function generateAfterCare(message, username) {
-  try {
-    const resp = await openai.createChatCompletion({
-      model: 'gpt-4o-mini',
-      temperature: 0.5,
-      messages: [
-        { role: 'system', content: `Agente de casino. Hablas con "${username}". Ya cobró hoy.` },
-        { role: 'user', content: message },
-      ],
-    });
-    return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'Tu reintegro ya está listo. Volvé mañana.'; }
-}
-
-// ================== NEGOCIO ==================
-async function checkUserInSheets(username) {
-  const lookupKey = username.toLowerCase().trim();
-  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
-  const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
-  
-  const foundIndices = [];
-  let userTotals = { deposits: 0, withdrawals: 0 };
-
-  for (let i = 0; i < rows.length; i++) {
-    const rowUser = String(rows[i][1] || '').toLowerCase().trim();
-    if (rowUser === lookupKey) {
-      foundIndices.push(i);
-      const type = String(rows[i][0] || '').toLowerCase();
-      const amount = parseFloat(String(rows[i][2] || '0').replace(/[^0-9.-]/g, '')) || 0;
-      if (type.includes('deposit') || type.includes('depósito') || type.includes('carga')) {
-        userTotals.deposits += amount;
-      } else if (type.includes('withdraw') || type.includes('retiro') || type.includes('retir')) {
-        userTotals.withdrawals += amount;
-      }
-    }
-  }
-
-  if (foundIndices.length === 0) return { status: 'not_found' };
-
-  let alreadyClaimed = false;
-  for (const idx of foundIndices) {
-    if (String(rows[idx][4] || '').toLowerCase().includes('reclam')) {
-      alreadyClaimed = true;
-      break;
-    }
-  }
-  if (alreadyClaimed) return { status: 'claimed', username };
-
-  const net = userTotals.deposits - userTotals.withdrawals;
-  if (net <= 1) return { status: 'no_balance', net: net.toFixed(2), username, indices: foundIndices };
-
-  return { 
-    status: 'success', 
-    net: net.toFixed(2), 
-    bonus: (net * 0.08).toFixed(2), 
-    username, 
-    indices: foundIndices,
-    spreadsheetId 
-  };
 }
 
 // ================== PROCESAMIENTO ==================
-async function processConversation(accountId, conversationId, contactId, contactName, fullMessage) {
-  console.log(`🤖 Msg: "${fullMessage}" | ContactName: "${contactName}"`);
-
-  let state = userStates.get(conversationId) || { claimed: false, username: null, lastActivity: Date.now() };
-  state.lastActivity = Date.now();
+async function processConversation(accountId, conversationId, fullMessage) {
+  // 1. Obtener o Inicializar Estado
+  let state = userStates.get(conversationId);
   
-  let activeUsername = state.username;
-  if (!activeUsername && isValidUsername(contactName)) {
-    activeUsername = contactName.toLowerCase();
-    state.username = activeUsername;
+  if (!state) {
+    // Si es nueva conversación, asignamos un nombre aleatorio
+    state = { 
+      agentName: getRandomName(), 
+      lastActivity: Date.now() 
+    };
+    console.log(`🆕 Nueva conversación (${conversationId}). Agente asignada: ${state.agentName}`);
+  } else {
+    state.lastActivity = Date.now();
   }
+  
   userStates.set(conversationId, state);
 
-  if (state.claimed && activeUsername) {
-    const reply = await generateAfterCare(fullMessage, activeUsername);
-    await sendReplyToChatwoot(accountId, conversationId, reply);
-    return;
-  }
+  console.log(`💬 Msg para ${state.agentName}: "${fullMessage}"`);
 
-  if (activeUsername) {
-    console.log(`⚡ Procesando usuario conocido: ${activeUsername}`);
-    const result = await checkUserInSheets(activeUsername);
-    
-    if (result.status === 'success') {
-      const apiResult = await creditUserBalance(activeUsername, result.bonus);
-      
-      if (apiResult.success) {
-        const reply = await generateCheckResult(activeUsername, 'success', result);
-        await sendReplyToChatwoot(accountId, conversationId, reply);
-        await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
-        await updateChatwootContact(accountId, contactId, activeUsername);
-        state.claimed = true;
-        userStates.set(conversationId, state);
-      } else {
-        console.error(`❌ FALLÓ API CARGA: ${apiResult.error}`);
-        const reply = await generateCheckResult(activeUsername, 'api_error', result);
-        await sendReplyToChatwoot(accountId, conversationId, reply);
-      }
-    } 
-    else {
-      const reply = await generateCheckResult(activeUsername, result.status, result);
-      await sendReplyToChatwoot(accountId, conversationId, reply);
-      if (result.status === 'claimed' || result.status === 'no_balance') {
-        state.claimed = true; 
-        userStates.set(conversationId, state);
-      }
-    }
-    return;
-  }
+  // 2. Generar respuesta con IA
+  const reply = await generateSalesReply(fullMessage, state.agentName);
 
-  const msgLower = fullMessage.toLowerCase();
-  if (msgLower.includes('no') && (msgLower.includes('recuerdo') || msgLower.includes('se')) && msgLower.includes('usuario')) {
-      await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal.");
-      return;
-  }
-
-  const extractedUser = extractUsername(fullMessage);
-  if (extractedUser) {
-    console.log(`⚡ Usuario en mensaje: ${extractedUser}`);
-    const result = await checkUserInSheets(extractedUser);
-    
-    if (result.status === 'success') {
-       const apiResult = await creditUserBalance(extractedUser, result.bonus);
-       
-       if (apiResult.success) {
-          const reply = await generateCheckResult(extractedUser, 'success', result);
-          await sendReplyToChatwoot(accountId, conversationId, reply);
-          await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
-          await updateChatwootContact(accountId, contactId, extractedUser);
-          state.claimed = true;
-          state.username = extractedUser;
-          userStates.set(conversationId, state);
-       } else {
-          console.error(`❌ FALLÓ API CARGA: ${apiResult.error}`);
-          const reply = await generateCheckResult(extractedUser, 'api_error', result);
-          await sendReplyToChatwoot(accountId, conversationId, reply);
-       }
-    } else {
-      const reply = await generateCheckResult(extractedUser, result.status, result);
-      await sendReplyToChatwoot(accountId, conversationId, reply);
-      if (result.status === 'claimed' || result.status === 'no_balance') {
-        state.claimed = true;
-        state.username = extractedUser;
-        userStates.set(conversationId, state);
-      }
-    }
-  } else {
-    const reply = await generateCasualChat(fullMessage);
-    await sendReplyToChatwoot(accountId, conversationId, reply);
-  }
+  // 3. Enviar a Chatwoot
+  await sendReplyToChatwoot(accountId, conversationId, reply);
 }
 
 // ================== WEBHOOK ==================
