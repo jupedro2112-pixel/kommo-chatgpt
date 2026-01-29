@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const FormData = require('form-data');
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
@@ -29,9 +28,7 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-const PLATFORM_ROOT = "https://admin.agentesadmin.bet/"; // Para obtener cookies iniciales
-const PLATFORM_API_URL = "https://admin.agentesadmin.bet/api/admin/"; 
-
+const PLATFORM_URL = "https://admin.agentesadmin.bet/api/admin/"; 
 const PLATFORM_USER = process.env.PLATFORM_USER; 
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
@@ -53,195 +50,179 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (SESSION MANAGER) ==================
+// ================== INTEGRACIÓN PLATAFORMA (HARDCORE HEADERS) ==================
 
-// Almacén de cookies global (Simula ser un navegador abierto)
-let GLOBAL_COOKIES = [];
-
-function updateCookies(response) {
-    const rawCookies = response.headers['set-cookie'];
-    if (rawCookies) {
-        rawCookies.forEach(c => {
-            const keyVal = c.split(';')[0];
-            // Evitamos duplicados básicos
-            if (!GLOBAL_COOKIES.includes(keyVal)) {
-                GLOBAL_COOKIES.push(keyVal);
-            }
-        });
-        console.log("🍪 Cookies actualizadas:", GLOBAL_COOKIES.length);
-    }
+/**
+ * Función auxiliar para codificar body x-www-form-urlencoded manualmente.
+ * Esto evita que axios manipule los datos de forma extraña.
+ */
+function toFormUrlEncoded(data) {
+    return Object.keys(data).map(key => {
+        return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
+    }).join('&');
 }
 
-function getCookieHeader() {
-    return GLOBAL_COOKIES.join('; ');
-}
+// Configuración de Axios para parecer Chrome Windows
+const apiClient = axios.create({
+  baseURL: PLATFORM_URL,
+  maxRedirects: 0, // No seguir redirecciones automáticas (para detectar el 302 a HTML)
+  validateStatus: function (status) {
+    return status >= 200 && status < 500; // Aceptar todos los status para ver qué pasa
+  },
+  headers: {
+    'Host': 'admin.agentesadmin.bet',
+    'Connection': 'keep-alive',
+    'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    'Accept': 'application/json, text/plain, */*',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'X-Requested-With': 'XMLHttpRequest',
+    'sec-ch-ua-mobile': '?0',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'sec-ch-ua-platform': '"Windows"',
+    'Origin': 'https://admin.agentesadmin.bet',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    'Referer': 'https://admin.agentesadmin.bet/',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+  }
+});
 
-// 1. INICIALIZAR SESIÓN (Evita redirección HTML)
-async function warmUpSession() {
-    console.log("🔥 [API] Calentando sesión (GET Root)...");
-    try {
-        const resp = await axios.get(PLATFORM_ROOT, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
-        updateCookies(resp);
-        return true;
-    } catch (err) {
-        console.error("⚠️ Error calentando sesión:", err.message);
-        return false;
-    }
-}
+let SESSION_COOKIE = null;
 
-// 2. LOGIN (Usando Cookies previas)
 async function getPlatformToken() {
-    // Paso 0: Asegurar cookies
-    if (GLOBAL_COOKIES.length === 0) {
-        await warmUpSession();
+  console.log(`🔄 [API] Login (Hardcore Headers)...`);
+  
+  try {
+    const bodyData = toFormUrlEncoded({
+        action: 'LOGIN',
+        username: PLATFORM_USER,
+        password: PLATFORM_PASS
+    });
+
+    const headers = {};
+    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
+
+    const resp = await apiClient.post('', bodyData, { headers });
+
+    // Guardar cookies si las hay
+    if (resp.headers['set-cookie']) {
+        SESSION_COOKIE = resp.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+        console.log("🍪 Nueva Cookie guardada:", SESSION_COOKIE);
     }
 
-    console.log(`🔄 [API] Login con Cookies...`);
-    
-    try {
-        const form = new FormData();
-        form.append('action', 'LOGIN');
-        form.append('username', PLATFORM_USER);
-        form.append('password', PLATFORM_PASS);
+    let data = resp.data;
 
-        const resp = await axios.post(PLATFORM_API_URL, form, {
-            headers: {
-                ...form.getHeaders(),
-                'Cookie': getCookieHeader(), // <--- LA CLAVE
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Origin': 'https://admin.agentesadmin.bet',
-                'Referer': 'https://admin.agentesadmin.bet/',
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
+    // Si devuelve HTML o redirección
+    if (typeof data === 'string' && (data.includes('<!doctype html>') || data.includes('<html'))) {
+        console.error("❌ [API] Bloqueo detectado (HTML Response).");
+        return null;
+    }
 
-        updateCookies(resp); // Guardamos nuevas cookies de sesión logueada
-
-        // Verificación de respuesta
-        let data = resp.data;
-        if (typeof data === 'string' && data.includes('{')) {
-            try { 
+    // Limpieza de JSON sucio
+    if (typeof data === 'string') {
+        try { 
+             if (data.includes('{')) {
                 const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
                 data = JSON.parse(jsonPart);
-            } catch(e) {}
-        }
-
-        // Si devuelve HTML, estamos bloqueados
-        if (typeof data === 'string' && data.trim().startsWith('<')) {
-            console.error("❌ [API] Login bloqueado (HTML Response). Intentando limpiar cookies y reintentar...");
-            GLOBAL_COOKIES = []; // Reset y reintento
-            return null;
-        }
-
-        console.log("📩 [API] Login Response:", JSON.stringify(data));
-
-        if (data && data.success && data.token) {
-            return data.token;
-        } else {
-            console.error("❌ [API] Login falló:", data);
-            return null;
-        }
-    } catch (err) {
-        console.error("❌ [API] Error HTTP Login:", err.message);
-        return null;
+             }
+        } catch(e) {}
     }
+
+    console.log("📩 [API] Login Response:", JSON.stringify(data));
+
+    if (data && data.success && data.token) {
+      return data.token;
+    } else {
+      console.error("❌ [API] Login falló:", data);
+      return null;
+    }
+  } catch (err) {
+    console.error("❌ [API] Error HTTP Login:", err.message);
+    return null;
+  }
 }
 
-// 3. BUSCAR USUARIO
 async function getUserIdByName(token, targetUsername) {
-    console.log(`🔎 [API] Buscando ID para: ${targetUsername}`);
-    try {
-        const form = new FormData();
-        form.append('action', 'showusers');
-        form.append('token', token);
-        form.append('username', targetUsername);
+  console.log(`🔎 [API] Buscando ID para: ${targetUsername}`);
+  try {
+    const bodyData = toFormUrlEncoded({
+        action: 'showusers',
+        token: token,
+        username: targetUsername
+    });
 
-        const resp = await axios.post(PLATFORM_API_URL, form, {
-            headers: {
-                ...form.getHeaders(),
-                'Cookie': getCookieHeader(),
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
+    const headers = {};
+    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
 
-        let data = resp.data;
-        if (typeof data === 'string' && data.includes('{')) {
-            try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
-        }
+    const resp = await apiClient.post('', bodyData, { headers });
+    let data = resp.data;
 
-        const usersList = data.users || data.data || [];
-        if (Array.isArray(usersList)) {
-            const found = usersList.find(u => 
-                String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
-            );
-            if (found && found.user_id) {
-                console.log(`✅ [API] ID encontrado: ${found.user_id}`);
-                return found.user_id;
-            }
-        }
-        console.error("❌ [API] Usuario no encontrado.");
-        return null;
-    } catch (err) {
-        console.error("❌ [API] Error buscando usuario:", err.message);
-        return null;
+    if (typeof data === 'string' && data.includes('{')) {
+        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
     }
+
+    const usersList = data.users || data.data || [];
+    if (Array.isArray(usersList)) {
+        const found = usersList.find(u => 
+            String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
+        );
+        if (found && found.user_id) {
+            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+            return found.user_id;
+        }
+    }
+    console.error("❌ [API] Usuario no encontrado.");
+    return null;
+  } catch (err) {
+    console.error("❌ [API] Error buscando usuario:", err.message);
+    return null;
+  }
 }
 
-// 4. DEPOSITAR
 async function creditUserBalance(username, amount) {
-    console.log(`💰 [API] Cargando $${amount} a ${username}`);
+  console.log(`💰 [API] Cargando $${amount} a ${username}`);
+  
+  const token = await getPlatformToken();
+  if (!token) return { success: false, error: 'Login Failed (WAF Block)' };
+
+  const childId = await getUserIdByName(token, username);
+  if (!childId) return { success: false, error: 'User Not Found' };
+
+  try {
+    const amountCents = Math.round(parseFloat(amount) * 100);
     
-    // Login fresco
-    const token = await getPlatformToken();
-    if (!token) return { success: false, error: 'Login Failed (Check Credentials or WAF)' };
+    const bodyData = toFormUrlEncoded({
+        action: 'DepositMoney',
+        token: token,
+        childid: childId,
+        amount: amountCents,
+        currency: PLATFORM_CURRENCY
+    });
 
-    // Buscar ID
-    const childId = await getUserIdByName(token, username);
-    if (!childId) return { success: false, error: 'User Not Found' };
+    const headers = {};
+    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
 
-    try {
-        const amountCents = Math.round(parseFloat(amount) * 100);
-        
-        const form = new FormData();
-        form.append('action', 'DepositMoney');
-        form.append('token', token);
-        form.append('childid', childId);
-        form.append('amount', amountCents);
-        form.append('currency', PLATFORM_CURRENCY);
+    const resp = await apiClient.post('', bodyData, { headers });
+    let data = resp.data;
 
-        const resp = await axios.post(PLATFORM_API_URL, form, {
-            headers: {
-                ...form.getHeaders(),
-                'Cookie': getCookieHeader(),
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
-
-        let data = resp.data;
-        if (typeof data === 'string' && data.includes('{')) {
-            try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
-        }
-
-        console.log("📩 [API] Deposit Response:", JSON.stringify(data));
-
-        if (data && data.success) {
-            console.log(`✅ [API] Carga OK.`);
-            return { success: true };
-        } else {
-            return { success: false, error: data.error || 'API Error' };
-        }
-    } catch (err) {
-        console.error("❌ [API] Error Deposit:", err.message);
-        return { success: false, error: err.message };
+    if (typeof data === 'string' && data.includes('{')) {
+        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
     }
-}
 
+    console.log("📩 [API] Deposit Response:", JSON.stringify(data));
+
+    if (data && data.success) {
+      console.log(`✅ [API] Carga OK.`);
+      return { success: true };
+    } else {
+      return { success: false, error: data.error || 'API Error' };
+    }
+  } catch (err) {
+    console.error("❌ [API] Error Deposit:", err.message);
+    return { success: false, error: err.message };
+  }
+}
 
 // ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
@@ -530,4 +511,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Session Mode) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Hardcore Headers) Activo en puerto ${PORT}`));
