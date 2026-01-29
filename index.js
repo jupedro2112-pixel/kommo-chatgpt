@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const { google } = require('googleapis');
+const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
 
 const app = express();
@@ -9,22 +11,14 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ================== MEMORIA Y ESTADOS ==================
+// ================== MEMORIA ==================
 const messageBuffer = new Map(); 
 const userStates = new Map(); 
 
-// Nombres para la identidad dinámica (Mujeres)
-const AGENT_NAMES = [
-  "Cami", "Sofi", "Valen", "Martu", "Lu", 
-  "Flor", "Juli", "Mica", "Caro", "Dani",
-  "Rochi", "Anto", "Pau", "Marian", "Vicky"
-];
-
-// Limpieza de estados inactivos cada 1 hora
+// Limpieza de estados antiguos
 setInterval(() => {
   const now = Date.now();
   for (const [id, state] of userStates.entries()) {
-    // Si pasó más de 24hs, borramos la memoria
     if (now - state.lastActivity > 24 * 60 * 60 * 1000) userStates.delete(id);
   }
 }, 60 * 60 * 1000);
@@ -33,23 +27,56 @@ setInterval(() => {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
+const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-const configuration = new Configuration({ apiKey: OPENAI_API_KEY });
-const openai = new OpenAIApi(configuration);
+const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
 
-// ================== UTILIDADES ==================
-function cleanHtml(html) {
-  if (!html) return "";
-  return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+let GOOGLE_CREDENTIALS = null;
+if (GOOGLE_CREDENTIALS_JSON) {
+  try { GOOGLE_CREDENTIALS = JSON.parse(GOOGLE_CREDENTIALS_JSON); } 
+  catch (err) { console.error('❌ Error Credentials JSON:', err.message); }
 }
 
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const auth = new GoogleAuth({
+  credentials: GOOGLE_CREDENTIALS,
+  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+});
 
-function getRandomName() {
-  return AGENT_NAMES[Math.floor(Math.random() * AGENT_NAMES.length)];
+// ================== GOOGLE SHEETS ==================
+async function getSheetData(spreadsheetId, range) {
+  try {
+    const authClient = await auth.getClient();
+    const sheets = google.sheets({ version: 'v4', auth: authClient });
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+    return res.data.values || [];
+  } catch (error) {
+    console.error('❌ Error Sheets:', error?.message);
+    return [];
+  }
 }
 
-// ================== CHATWOOT ==================
+async function markAllUserRowsAsClaimed(spreadsheetId, indices, columnLetter = 'E') {
+  try {
+    const authClient = await auth.getClient();
+    const sheets = google.sheets({ version: 'v4', auth: authClient });
+    const promises = indices.map(rowIndex => {
+      const sheetRow = rowIndex + 2; 
+      return sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `Sheet1!${columnLetter}${sheetRow}`,
+        valueInputOption: 'RAW',
+        resource: { values: [['RECLAMADO']] },
+      });
+    });
+    await Promise.all(promises);
+    return true;
+  } catch (err) {
+    console.error('❌ Error marcando reclamado:', err?.message);
+    return false;
+  }
+}
+
+// ================== CHATWOOT API ==================
 async function sendReplyToChatwoot(accountId, conversationId, message) {
   if (!CHATWOOT_ACCESS_TOKEN) return;
   try {
@@ -59,94 +86,273 @@ async function sendReplyToChatwoot(accountId, conversationId, message) {
       message_type: 'outgoing',
       private: false
     }, { headers: { 'api_access_token': CHATWOOT_ACCESS_TOKEN } });
-    console.log(`✅ Respuesta enviada a Chatwoot.`);
+    console.log(`✅ Respuesta enviada [Conv: ${conversationId}]`);
   } catch (err) {
-    console.error('❌ Error enviando a Chatwoot:', err.message);
+    console.error('❌ Error enviando:', err.message);
   }
 }
 
-// ================== IA GENERATOR (Con Memoria) ==================
-async function generateSalesReply(userMessage, agentName, history) {
-  const systemPrompt = `
-    Sos ${agentName}, vendés cortinas. Tu personalidad es: "De entre casa", super amigable, relajada, como si hablaras con una amiga/o, pero queriendo cerrar la venta. Nada corporativo ni robotizado.
+async function updateChatwootContact(accountId, contactId, username) {
+  if (!CHATWOOT_ACCESS_TOKEN || !contactId) return;
+  try {
+    console.log(`📝 Agendando contacto ${contactId} como "${username}"...`);
+    const url = `${CHATWOOT_BASE_URL}/api/v1/accounts/${accountId}/contacts/${contactId}`;
+    await axios.put(url, { name: username }, { headers: { 'api_access_token': CHATWOOT_ACCESS_TOKEN } });
+  } catch (err) {
+    console.error('❌ Error agendando:', err?.message);
+  }
+}
 
-    REGLAS DE ORO:
-    1. NO SALUDES todo el tiempo. Si ya venís hablando (mirá el historial), andá al grano.
-    2. RESPUESTAS CORTAS Y RESUMIDAS. La gente no lee textos largos.
-    3. OPINIÓN PERSONAL: Tirá siempre algún dato tuyo random pero útil (ej: "A mí me encanta el lino para el living porque deja pasar linda luz", "Yo en mi pieza puse blackout porque odio que me entre sol a la mañana").
-    4. CÁLCULO DE PRECIO (Fórmula):
-       - Si te dan medidas (Ancho x Alto), calculá así: (Ancho * Alto * 0.000184 * 1500).
-       - El resultado es en DÓLARES. Pasalo tal cual.
+// ================== UTILIDADES Y REGEX ==================
+function cleanHtml(html) {
+  if (!html) return "";
+  return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+}
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    INFO COMERCIAL (Tirala de a poco, no todo junto):
-    - Pago: 6 cuotas SIN interés o 10% OFF en efectivo.
-    - Demora: 10 días (se hacen a pedido).
-    - Flete: ¡Gratis si compra en las próximas 48hs! (Usalo para cerrar).
-    - Colocación: Decile que ronda el 10% del valor de la cortina aprox.
-    - Telas: Ofrecé de todo (Blackout, Sunscreen, Voile, Lino, Roller, Bandas).
+const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
 
-    IDENTIDAD:
-    - Sos humana, Argentina.
-    - Tu nombre es ${agentName}.
-    - NUNCA digas que sos una IA.
-  `;
+function isValidUsername(text) {
+  if (!text) return false;
+  if (TEAM_USER_PATTERN.test(text)) return true;
+  if (/[a-z]+\d{3,}$/i.test(text)) return true; 
+  return false;
+}
 
-  // Construimos el array de mensajes incluyendo el historial
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    ...history, // Insertamos la memoria aquí
-    { role: 'user', content: userMessage } // Mensaje actual
-  ];
+function extractUsername(message) {
+  if (!message) return null;
+  const m = message.trim();
+  
+  const teamMatch = m.match(TEAM_USER_PATTERN);
+  if (teamMatch) return teamMatch[0].toLowerCase();
+
+  const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
+  if (explicit) return explicit[1].toLowerCase();
+
+  const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso','bono','buenas','tardes','noches','tengo','plata','carga']);
+  const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 4 && !STOPWORDS.has(t.toLowerCase()));
+  
+  const withNumbers = tokens.find(t => /\d/.test(t));
+  if (withNumbers) return withNumbers.toLowerCase();
+
+  return null;
+}
+
+// ================== GENERADORES IA ==================
+
+// 1. CHAT GENERAL (Sin usuario identificado)
+async function generateCasualChat(message) {
+  try {
+    const resp = await openai.createChatCompletion({
+      model: 'gpt-4o-mini',
+      temperature: 0.4, // Serio y profesional
+      messages: [
+        { 
+          role: 'system', 
+          content: `Sos un agente de casino virtual. Tu tono es SERIO, BREVE y PROFESIONAL.
+          
+          INFORMACIÓN CLAVE:
+          - El reembolso es sobre el NETO DEL DÍA ANTERIOR.
+          - Atención disponible las 24 horas.
+          
+          OBJETIVO:
+          - Si el cliente saluda, devolvé el saludo brevemente y pedí el usuario.
+          - Si pregunta cómo funciona, explicá brevemente lo del neto de ayer.
+          - NUNCA des ejemplos de usuarios.
+          - Si no recuerda el usuario, decile que escriba al WhatsApp principal.` 
+        },
+        { role: 'user', content: message },
+      ],
+    });
+    return resp.data?.choices?.[0]?.message?.content || 'Hola. Para verificar tu reembolso sobre el neto de ayer, necesito tu usuario.';
+  } catch (err) { return 'Hola, por favor indicame tu usuario.'; }
+}
+
+// 2. RESULTADO VERIFICACIÓN
+async function generateCheckResult(username, status, data = {}) {
+  let systemPrompt = `Sos un agente de casino profesional. Hablas con "${username}". Sé breve y directo.`;
+
+  if (status === 'not_found') {
+    systemPrompt += ` El usuario NO figura en la base de datos del día anterior.
+    Pedile que verifique si está bien escrito.`;
+  } 
+  else if (status === 'claimed') {
+    systemPrompt += ` El sistema indica que ya reclamó su reembolso hoy.
+    Decile que ya fue procesado.`;
+  } 
+  else if (status === 'no_balance') {
+    systemPrompt += ` Verificaste su cuenta. Su NETO del día anterior es ${data.net}.
+    Informale que no tiene saldo negativo suficiente para aplicar al reintegro.`;
+  } 
+  else if (status === 'success') {
+    systemPrompt += ` ÉXITO. Corresponde reintegro.
+    Neto del día anterior: ${data.net}.
+    Monto a acreditar (8%): ${data.bonus}.
+    Confirmale que se acredita ahora mismo.`;
+  }
 
   try {
     const resp = await openai.createChatCompletion({
-      model: 'gpt-4o-mini', 
-      temperature: 0.6,
-      messages: messages,
+      model: 'gpt-4o-mini',
+      temperature: 0.4,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: "Generá la respuesta." },
+      ],
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
-    console.error("❌ Error OpenAI:", err.message);
-    return "Uy, se me colgó el sistema un segundo. ¿Me repetís?";
+    if (status === 'success') return `Reintegro aprobado sobre neto de ayer. Monto: $${data.bonus}. Se acredita ahora.`;
+    return 'Estoy verificando tu cuenta.';
   }
 }
 
-// ================== PROCESAMIENTO ==================
-async function processConversation(accountId, conversationId, fullMessage) {
-  // 1. Gestión de Identidad y Memoria
-  let state = userStates.get(conversationId);
+// 3. POST-VENTA
+async function generateAfterCare(message, username) {
+  try {
+    const resp = await openai.createChatCompletion({
+      model: 'gpt-4o-mini',
+      temperature: 0.5,
+      messages: [
+        { role: 'system', content: `Agente de casino profesional. Hablas con "${username}".
+        Ya cobró hoy. Si insiste, recordale que el beneficio es una vez por día sobre el neto de ayer.` },
+        { role: 'user', content: message },
+      ],
+    });
+    return resp.data?.choices?.[0]?.message?.content;
+  } catch (err) { return 'Tu reintegro ya fue procesado. Volvé mañana para el próximo.'; }
+}
+
+// ================== LÓGICA DE NEGOCIO ==================
+async function checkUserInSheets(username) {
+  // NOTA: Se eliminó la restricción horaria isClaimWindowOpen(). Ahora es 24/7.
+
+  const lookupKey = username.toLowerCase().trim();
+  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
+  const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
   
-  if (!state) {
-    state = { 
-      agentName: getRandomName(), 
-      lastActivity: Date.now(),
-      history: [] // Inicializamos historial vacío
-    };
-    console.log(`🆕 Nueva conversación (${conversationId}). Atiende: ${state.agentName}`);
-  } else {
-    state.lastActivity = Date.now();
+  const foundIndices = [];
+  let userTotals = { deposits: 0, withdrawals: 0 };
+
+  for (let i = 0; i < rows.length; i++) {
+    const rowUser = String(rows[i][1] || '').toLowerCase().trim();
+    if (rowUser === lookupKey) {
+      foundIndices.push(i);
+      const type = String(rows[i][0] || '').toLowerCase();
+      const amount = parseFloat(String(rows[i][2] || '0').replace(/[^0-9.-]/g, '')) || 0;
+
+      if (type.includes('deposit') || type.includes('depósito') || type.includes('carga')) {
+        userTotals.deposits += amount;
+      } else if (type.includes('withdraw') || type.includes('retiro') || type.includes('retir')) {
+        userTotals.withdrawals += amount;
+      }
+    }
   }
 
-  console.log(`💬 Msg para ${state.agentName}: "${fullMessage}"`);
+  if (foundIndices.length === 0) return { status: 'not_found' };
 
-  // 2. Generar respuesta (pasando historial)
-  const reply = await generateSalesReply(fullMessage, state.agentName, state.history);
-
-  // 3. Enviar respuesta a Chatwoot
-  await sendReplyToChatwoot(accountId, conversationId, reply);
-
-  // 4. ACTUALIZAR MEMORIA
-  // Agregamos mensaje del usuario y respuesta del bot al historial
-  state.history.push({ role: 'user', content: fullMessage });
-  state.history.push({ role: 'assistant', content: reply });
-
-  // Limitamos la memoria a los últimos 20 mensajes (10 idas y vueltas) para no saturar tokens
-  if (state.history.length > 20) {
-    state.history = state.history.slice(state.history.length - 20);
+  let alreadyClaimed = false;
+  for (const idx of foundIndices) {
+    if (String(rows[idx][4] || '').toLowerCase().includes('reclam')) {
+      alreadyClaimed = true;
+      break;
+    }
   }
 
-  // Guardamos el estado actualizado
+  if (alreadyClaimed) return { status: 'claimed', username };
+
+  const net = userTotals.deposits - userTotals.withdrawals;
+  if (net <= 1) return { status: 'no_balance', net: net.toFixed(2), username, indices: foundIndices };
+
+  return { 
+    status: 'success', 
+    net: net.toFixed(2), 
+    bonus: (net * 0.08).toFixed(2), 
+    username, 
+    indices: foundIndices,
+    spreadsheetId 
+  };
+}
+
+// ================== PROCESAMIENTO ==================
+async function processConversation(accountId, conversationId, contactId, contactName, fullMessage) {
+  console.log(`🤖 Msg: "${fullMessage}" | ContactName: "${contactName}"`);
+
+  let state = userStates.get(conversationId) || { claimed: false, username: null, lastActivity: Date.now() };
+  state.lastActivity = Date.now();
+  
+  // 1. Identificación automática por Agenda
+  let activeUsername = state.username;
+  if (!activeUsername && isValidUsername(contactName)) {
+    console.log(`✅ Usuario detectado por Agenda: ${contactName}`);
+    activeUsername = contactName.toLowerCase();
+    state.username = activeUsername;
+  }
   userStates.set(conversationId, state);
+
+  // 2. Si ya cobró hoy
+  if (state.claimed && activeUsername) {
+    const reply = await generateAfterCare(fullMessage, activeUsername);
+    await sendReplyToChatwoot(accountId, conversationId, reply);
+    return;
+  }
+
+  // 3. Usuario identificado (Agenda o Estado) -> Procesar Reclamo
+  if (activeUsername) {
+    console.log(`⚡ Procesando usuario conocido: ${activeUsername}`);
+    const result = await checkUserInSheets(activeUsername);
+    
+    const reply = await generateCheckResult(activeUsername, result.status, result);
+    await sendReplyToChatwoot(accountId, conversationId, reply);
+
+    if (result.status === 'success') {
+      await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
+      state.claimed = true;
+      userStates.set(conversationId, state);
+      await updateChatwootContact(accountId, contactId, activeUsername);
+    } else if (result.status === 'claimed' || result.status === 'no_balance') {
+      state.claimed = true; 
+      userStates.set(conversationId, state);
+    }
+    return;
+  }
+
+  // 4. Usuario NO identificado -> Charla para obtener usuario
+  
+  // Detección de "Olvidé usuario"
+  const msgLower = fullMessage.toLowerCase();
+  if (msgLower.includes('no') && (msgLower.includes('recuerdo') || msgLower.includes('se')) && msgLower.includes('usuario')) {
+      await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal para solicitarlo.");
+      return;
+  }
+
+  // Extracción del mensaje
+  const extractedUser = extractUsername(fullMessage);
+
+  if (extractedUser) {
+    console.log(`⚡ Usuario en mensaje: ${extractedUser}`);
+    const result = await checkUserInSheets(extractedUser);
+    
+    const reply = await generateCheckResult(extractedUser, result.status, result);
+    await sendReplyToChatwoot(accountId, conversationId, reply);
+
+    if (result.status === 'success') {
+      await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
+      await updateChatwootContact(accountId, contactId, extractedUser); // AGENDAR AHORA
+      
+      state.claimed = true;
+      state.username = extractedUser;
+      userStates.set(conversationId, state);
+    } else if (result.status === 'claimed' || result.status === 'no_balance') {
+      state.claimed = true;
+      state.username = extractedUser;
+      userStates.set(conversationId, state);
+    }
+  } else {
+    // Charla casual (Pedir usuario)
+    const reply = await generateCasualChat(fullMessage);
+    await sendReplyToChatwoot(accountId, conversationId, reply);
+  }
 }
 
 // ================== WEBHOOK ==================
@@ -158,11 +364,12 @@ app.post('/webhook-chatwoot', (req, res) => {
 
   const conversationId = body.conversation?.id;
   const accountId = body.account?.id;
+  const contactId = body.sender?.id;
+  const contactName = body.sender?.name || ''; 
   const content = cleanHtml(body.content);
 
   if (!conversationId || !content) return;
 
-  // Lógica de Buffer
   if (!messageBuffer.has(conversationId)) {
     messageBuffer.set(conversationId, { messages: [], timer: null });
   }
@@ -177,13 +384,11 @@ app.post('/webhook-chatwoot', (req, res) => {
     messageBuffer.delete(conversationId);
     
     (async () => {
-      // DEMORA DE 4 SEGUNDOS
-      console.log(`⏳ Escribiendo... (Simulando humano 4s)`);
-      await sleep(4000); 
-      
-      await processConversation(accountId, conversationId, fullText);
+      console.log(`⏳ Escribiendo... (Conv ${conversationId})`);
+      await sleep(3500); 
+      await processConversation(accountId, conversationId, contactId, contactName, fullText);
     })();
-  }, 3000); // Espera 3s para agrupar mensajes
+  }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Cortinas (Con Memoria) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 Activo en puerto ${PORT}`));
