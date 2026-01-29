@@ -24,6 +24,7 @@ const AGENT_NAMES = [
 setInterval(() => {
   const now = Date.now();
   for (const [id, state] of userStates.entries()) {
+    // Si pasó más de 24hs, borramos la memoria
     if (now - state.lastActivity > 24 * 60 * 60 * 1000) userStates.delete(id);
   }
 }, 60 * 60 * 1000);
@@ -64,13 +65,13 @@ async function sendReplyToChatwoot(accountId, conversationId, message) {
   }
 }
 
-// ================== IA GENERATOR (Vendedora de Cortinas) ==================
-async function generateSalesReply(userMessage, agentName) {
+// ================== IA GENERATOR (Con Memoria) ==================
+async function generateSalesReply(userMessage, agentName, history) {
   const systemPrompt = `
     Sos ${agentName}, vendés cortinas. Tu personalidad es: "De entre casa", super amigable, relajada, como si hablaras con una amiga/o, pero queriendo cerrar la venta. Nada corporativo ni robotizado.
 
     REGLAS DE ORO:
-    1. NO SALUDES todo el tiempo. Si ya venís hablando, andá al grano.
+    1. NO SALUDES todo el tiempo. Si ya venís hablando (mirá el historial), andá al grano.
     2. RESPUESTAS CORTAS Y RESUMIDAS. La gente no lee textos largos.
     3. OPINIÓN PERSONAL: Tirá siempre algún dato tuyo random pero útil (ej: "A mí me encanta el lino para el living porque deja pasar linda luz", "Yo en mi pieza puse blackout porque odio que me entre sol a la mañana").
     4. CÁLCULO DE PRECIO (Fórmula):
@@ -90,14 +91,18 @@ async function generateSalesReply(userMessage, agentName) {
     - NUNCA digas que sos una IA.
   `;
 
+  // Construimos el array de mensajes incluyendo el historial
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...history, // Insertamos la memoria aquí
+    { role: 'user', content: userMessage } // Mensaje actual
+  ];
+
   try {
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini', 
-      temperature: 0.6, // Un poco más alta para que sea más natural y "charlatana"
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ],
+      temperature: 0.6,
+      messages: messages,
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
@@ -108,28 +113,40 @@ async function generateSalesReply(userMessage, agentName) {
 
 // ================== PROCESAMIENTO ==================
 async function processConversation(accountId, conversationId, fullMessage) {
-  // 1. Gestión de Identidad (Nombre dinámico)
+  // 1. Gestión de Identidad y Memoria
   let state = userStates.get(conversationId);
   
   if (!state) {
     state = { 
       agentName: getRandomName(), 
-      lastActivity: Date.now() 
+      lastActivity: Date.now(),
+      history: [] // Inicializamos historial vacío
     };
     console.log(`🆕 Nueva conversación (${conversationId}). Atiende: ${state.agentName}`);
   } else {
     state.lastActivity = Date.now();
   }
-  
-  userStates.set(conversationId, state);
 
   console.log(`💬 Msg para ${state.agentName}: "${fullMessage}"`);
 
-  // 2. Generar respuesta
-  const reply = await generateSalesReply(fullMessage, state.agentName);
+  // 2. Generar respuesta (pasando historial)
+  const reply = await generateSalesReply(fullMessage, state.agentName, state.history);
 
-  // 3. Enviar respuesta
+  // 3. Enviar respuesta a Chatwoot
   await sendReplyToChatwoot(accountId, conversationId, reply);
+
+  // 4. ACTUALIZAR MEMORIA
+  // Agregamos mensaje del usuario y respuesta del bot al historial
+  state.history.push({ role: 'user', content: fullMessage });
+  state.history.push({ role: 'assistant', content: reply });
+
+  // Limitamos la memoria a los últimos 20 mensajes (10 idas y vueltas) para no saturar tokens
+  if (state.history.length > 20) {
+    state.history = state.history.slice(state.history.length - 20);
+  }
+
+  // Guardamos el estado actualizado
+  userStates.set(conversationId, state);
 }
 
 // ================== WEBHOOK ==================
@@ -155,19 +172,18 @@ app.post('/webhook-chatwoot', (req, res) => {
 
   if (buffer.timer) clearTimeout(buffer.timer);
 
-  // Esperamos 3 segundos a que termine de mandar mensajes
   buffer.timer = setTimeout(() => {
     const fullText = buffer.messages.join(" . ");
     messageBuffer.delete(conversationId);
     
     (async () => {
-      // DEMORA DE 4 SEGUNDOS (Simula que lee y escribe)
+      // DEMORA DE 4 SEGUNDOS
       console.log(`⏳ Escribiendo... (Simulando humano 4s)`);
       await sleep(4000); 
       
       await processConversation(accountId, conversationId, fullText);
     })();
-  }, 3000);
+  }, 3000); // Espera 3s para agrupar mensajes
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Cortinas (Vendedora Amigable) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Cortinas (Con Memoria) Activo en puerto ${PORT}`));
