@@ -15,6 +15,7 @@ app.use(express.urlencoded({ extended: true }));
 const messageBuffer = new Map(); 
 const userStates = new Map(); 
 
+// Cleanup routine
 setInterval(() => {
   const now = Date.now();
   for (const [id, state] of userStates.entries()) {
@@ -51,16 +52,14 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (BROWSER MIMIC) ==================
+// ================== INTEGRACIÓN PLATAFORMA (ROBUST) ==================
 
-// Helper para codificar datos como formulario web clásico
 function toFormUrlEncoded(data) {
     return Object.keys(data).map(key => {
         return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
     }).join('&');
 }
 
-// Almacén de cookies en memoria
 let SESSION_COOKIES = [];
 
 function saveCookies(response) {
@@ -68,7 +67,6 @@ function saveCookies(response) {
     if (raw) {
         raw.forEach(cookieLine => {
             const cookie = cookieLine.split(';')[0];
-            // Actualizar o agregar
             const cookieName = cookie.split('=')[0];
             const existingIndex = SESSION_COOKIES.findIndex(c => c.startsWith(cookieName + '='));
             if (existingIndex >= 0) {
@@ -77,45 +75,35 @@ function saveCookies(response) {
                 SESSION_COOKIES.push(cookie);
             }
         });
-        console.log("🍪 Cookies actualizadas:", SESSION_COOKIES);
+        console.log("🍪 Cookies updated:", SESSION_COOKIES.length);
     }
 }
 
-// Cliente base con headers de Chrome real
+// Cliente con Timeout estricto para no colgarse
 const client = axios.create({
     withCredentials: true,
-    maxRedirects: 0, // Importante: No seguir redirecciones (detectar bloqueo)
+    maxRedirects: 0, 
+    timeout: 10000, // 10 segundos máximo
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'es-ES,es;q=0.9',
         'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
         'Origin': 'https://admin.agentesadmin.bet',
         'Referer': 'https://admin.agentesadmin.bet/',
-        'X-Requested-With': 'XMLHttpRequest', // Critico para evitar HTML
+        'X-Requested-With': 'XMLHttpRequest',
     }
 });
 
-// 1. OBTENER SESIÓN INICIAL (Visita la home)
+// 1. WARM UP
 async function warmUp() {
-    console.log("🔥 [API] Visitando página de inicio para obtener cookies...");
+    console.log("🔥 [API] Warming up session...");
     try {
-        const resp = await client.get(ROOT_URL, {
-            headers: {
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none'
-            }
-        });
+        const resp = await client.get(ROOT_URL);
         saveCookies(resp);
     } catch (err) {
-        // A veces da error si redirige, pero igual manda cookies
         if (err.response) saveCookies(err.response);
-        else console.error("⚠️ Error WarmUp:", err.message);
+        else console.error("⚠️ WarmUp error:", err.message);
     }
 }
 
@@ -123,7 +111,7 @@ async function warmUp() {
 async function performLogin() {
     if (SESSION_COOKIES.length === 0) await warmUp();
 
-    console.log("🔄 [API] Logueando...");
+    console.log("🔄 [API] Sending Login request...");
     
     try {
         const body = toFormUrlEncoded({
@@ -142,15 +130,13 @@ async function performLogin() {
         saveCookies(resp);
 
         let data = resp.data;
-        // Limpieza si devuelve string JSON sucio
         if (typeof data === 'string' && data.includes('{')) {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
         }
 
-        // Si devuelve HTML es un bloqueo
         if (typeof data === 'string' && data.trim().startsWith('<')) {
-            console.error("❌ [API] Bloqueo detectado (HTML). Intentando reiniciar cookies...");
-            SESSION_COOKIES = []; // Limpiamos para intentar de nuevo la próxima
+            console.error("❌ [API] HTML Response in Login. Blocked.");
+            SESSION_COOKIES = []; 
             return null;
         }
 
@@ -159,17 +145,17 @@ async function performLogin() {
             return { token: data.token, adminId: data.user?.user_id };
         }
         
-        console.error("❌ [API] Login falló datos:", data);
+        console.error("❌ [API] Login failed data:", JSON.stringify(data));
         return null;
     } catch (err) {
-        console.error("❌ [API] Error Login:", err.message);
+        console.error("❌ [API] Login Exception:", err.message);
         return null;
     }
 }
 
-// 3. BUSCAR ID
+// 3. SEARCH
 async function getUserIdByName(token, adminId, targetUsername) {
-    console.log(`🔎 [API] Buscando ${targetUsername}...`);
+    console.log(`🔎 [API] Searching user: ${targetUsername}...`);
     try {
         const body = toFormUrlEncoded({
             action: 'ShowUsers',
@@ -198,30 +184,29 @@ async function getUserIdByName(token, adminId, targetUsername) {
         const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
 
         if (found && found.user_id) {
-            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+            console.log(`✅ [API] User Found ID: ${found.user_id}`);
             return found.user_id;
         }
-        console.error(`❌ [API] Usuario no encontrado.`);
+        console.error(`❌ [API] User not found in list of ${list.length}.`);
         return null;
     } catch (err) {
-        console.error("❌ [API] Error Búsqueda:", err.message);
+        console.error("❌ [API] Search Exception:", err.message);
         return null;
     }
 }
 
-// 4. DEPOSITAR
+// 4. DEPOSIT
 async function creditUserBalance(username, amount) {
-    console.log(`💰 [API] Cargando $${amount} a ${username}`);
+    console.log(`💰 [API] Starting Credit: $${amount} -> ${username}`);
     
-    // Login fresco
     const loginData = await performLogin();
-    if (!loginData) return { success: false, error: 'Login Blocked/Failed' };
+    if (!loginData) return { success: false, error: 'Login Failed' };
 
-    // Buscar ID
     const childId = await getUserIdByName(loginData.token, loginData.adminId, username);
     if (!childId) return { success: false, error: 'User Not Found' };
 
     try {
+        console.log(`💸 [API] Sending Deposit Request...`);
         const amountCents = Math.round(parseFloat(amount) * 100);
         
         const body = toFormUrlEncoded({
@@ -244,7 +229,7 @@ async function creditUserBalance(username, amount) {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
         }
 
-        console.log("📩 [API] Resultado:", JSON.stringify(data));
+        console.log("📩 [API] Deposit Result:", JSON.stringify(data));
 
         if (data && data.success) {
             return { success: true };
@@ -252,7 +237,7 @@ async function creditUserBalance(username, amount) {
             return { success: false, error: data.error || 'API Error' };
         }
     } catch (err) {
-        console.error("❌ [API] Error Deposit:", err.message);
+        console.error("❌ [API] Deposit Exception:", err.message);
         return { success: false, error: err.message };
     }
 }
@@ -544,4 +529,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Session + Cookies) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Robust Tracing) Activo en puerto ${PORT}`));
