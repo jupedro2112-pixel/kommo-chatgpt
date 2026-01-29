@@ -266,7 +266,7 @@ async function generateSalesReply(userMessage, agentName) {
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
     console.error("❌ Error OpenAI:", err.message);
-    return "Disculpá, estoy verificando el stock. ¿Podrías repetirme la consulta?";
+    return "Disculpá, estoy verificando el stock. ¿Podrías repetirme la consulta? por favor";
   }
 }
 
