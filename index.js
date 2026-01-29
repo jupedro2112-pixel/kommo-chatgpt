@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios'); // Solo para Chatwoot
-const FormData = require('form-data');
+const { exec } = require('child_process'); // <--- LA CLAVE: Ejecutar comandos de sistema
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
@@ -51,111 +51,107 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (CORREGIDO HEADERS) ==================
+// ================== INTEGRACIÓN PLATAFORMA (MODO CURL NATIVO) ==================
 
-const COMMON_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Origin': 'https://admin.agentesadmin.bet',
-    'Referer': 'https://admin.agentesadmin.bet/',
-    'Accept': 'application/json, text/plain, */*' // Importante pedir JSON explícitamente
-};
+/**
+ * Ejecuta una petición usando CURL del sistema operativo.
+ * Esto evita problemas de librerías y replica exactamente tu prueba exitosa en CMD.
+ */
+function runCurlCommand(params) {
+    return new Promise((resolve) => {
+        // Construimos los flags -F (Multipart Form Data)
+        let formArgs = '';
+        for (const [key, value] of Object.entries(params)) {
+            // Limpiamos el valor de comillas para evitar errores de bash
+            const safeValue = String(value).replace(/"/g, '\\"');
+            formArgs += ` -F "${key}=${safeValue}"`;
+        }
 
-async function getPlatformToken() {
-  console.log(`🔄 [API] Login...`);
-  
-  try {
-    const form = new FormData();
-    form.append('action', 'LOGIN');
-    form.append('username', PLATFORM_USER);
-    form.append('password', PLATFORM_PASS);
+        // El comando exacto con headers de navegador
+        const command = `curl -s -L -X POST "${PLATFORM_URL}" \
+        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+        -H "Origin: https://admin.agentesadmin.bet" \
+        -H "Referer: https://admin.agentesadmin.bet/" \
+        ${formArgs}`;
 
-    // CORRECCIÓN CRÍTICA: Combinamos headers manuales + headers del form (boundary)
-    const combinedHeaders = {
-        ...COMMON_HEADERS,
-        ...form.getHeaders() // <--- ESTO FALTABA EN LA VERSIÓN FETCH ANTERIOR
-    };
+        exec(command, (error, stdout, stderr) => {
+            if (error) {
+                console.error(`❌ Curl Error de Ejecución: ${error.message}`);
+                return resolve(null);
+            }
 
-    const response = await fetch(PLATFORM_URL, {
-        method: 'POST',
-        headers: combinedHeaders,
-        body: form
+            const output = stdout.toString().trim();
+            
+            // Intentamos encontrar JSON en la respuesta
+            try {
+                if (output.includes('{')) {
+                    // Extraer solo la parte JSON (por si curl trae basura extra)
+                    const jsonStr = output.substring(output.indexOf('{'), output.lastIndexOf('}') + 1);
+                    const data = JSON.parse(jsonStr);
+                    resolve(data);
+                } else {
+                    console.log(`⚠️ Curl devolvió algo que no es JSON: ${output.substring(0, 100)}...`);
+                    resolve(null);
+                }
+            } catch (e) {
+                console.error("❌ Error parseando JSON de curl:", e.message);
+                resolve(null);
+            }
+        });
     });
+}
 
-    const text = await response.text();
-    
-    // Parseo de respuesta
-    let data = text;
-    if (typeof data === 'string' && data.includes('{')) {
-        try { 
-            const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
-            data = JSON.parse(jsonPart);
-        } catch(e) {}
-    }
+// 1. LOGIN
+async function getPlatformToken() {
+  console.log(`🔄 [API] Ejecutando Login con CURL...`);
+  
+  const data = await runCurlCommand({
+      action: 'LOGIN',
+      username: PLATFORM_USER,
+      password: PLATFORM_PASS
+  });
 
-    // Si sigue siendo string HTML, mostramos el inicio para debug
-    if (typeof data === 'string') {
-        console.log("📩 [API] Respuesta HTML Inesperada:", data.substring(0, 150));
-        return null;
-    }
-
-    console.log("📩 [API] Login Response:", JSON.stringify(data));
-
-    if (data && data.success && data.token) {
+  if (data && data.success && data.token) {
+      console.log("✅ [API] Login Exitoso.");
       return data.token;
-    } else {
-      console.error("❌ [API] Login falló:", data);
+  } else {
+      console.error("❌ [API] Login falló:", JSON.stringify(data));
       return null;
-    }
-  } catch (err) {
-    console.error("❌ [API] Error Fetch Login:", err.message);
-    return null;
   }
 }
 
+// 2. BUSCAR ID DE USUARIO (showusers)
 async function getUserIdByName(token, targetUsername) {
   console.log(`🔎 [API] Buscando ID para: ${targetUsername}`);
-  try {
-    const form = new FormData();
-    form.append('action', 'showusers');
-    form.append('token', token);
-    form.append('username', targetUsername);
+  
+  const data = await runCurlCommand({
+      action: 'showusers',
+      token: token,
+      username: targetUsername
+  });
 
-    const combinedHeaders = {
-        ...COMMON_HEADERS,
-        ...form.getHeaders()
-    };
+  if (!data) return null;
 
-    const response = await fetch(PLATFORM_URL, {
-        method: 'POST',
-        headers: combinedHeaders,
-        body: form
-    });
-
-    let data = await response.text();
-    if (data.includes('{')) {
-        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
-    }
-
-    const usersList = data.users || data.data || [];
-    if (Array.isArray(usersList)) {
-        const found = usersList.find(u => 
-            String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
-        );
-        if (found && found.user_id) {
-            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
-            return found.user_id;
-        }
-    }
-    console.error("❌ [API] Usuario no encontrado.");
-    return null;
-  } catch (err) {
-    console.error("❌ [API] Error buscando usuario:", err.message);
-    return null;
+  // La API suele devolver array en 'users' o 'data'
+  const usersList = data.users || data.data || [];
+  
+  if (Array.isArray(usersList)) {
+      const found = usersList.find(u => 
+          String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
+      );
+      if (found && found.user_id) {
+          console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+          return found.user_id;
+      }
   }
+  
+  console.error("❌ [API] Usuario no encontrado en la lista.");
+  return null;
 }
 
+// 3. DEPOSITAR (DepositMoney)
 async function creditUserBalance(username, amount) {
-  console.log(`💰 [API] Cargando $${amount} a ${username}`);
+  console.log(`💰 [API] Proceso de carga: $${amount} a ${username}`);
   
   const token = await getPlatformToken();
   if (!token) return { success: false, error: 'Login Failed' };
@@ -163,45 +159,26 @@ async function creditUserBalance(username, amount) {
   const childId = await getUserIdByName(token, username);
   if (!childId) return { success: false, error: 'User Not Found' };
 
-  try {
-    const amountCents = Math.round(parseFloat(amount) * 100);
-    
-    const form = new FormData();
-    form.append('action', 'DepositMoney');
-    form.append('token', token);
-    form.append('childid', childId);
-    form.append('amount', amountCents);
-    form.append('currency', PLATFORM_CURRENCY);
+  // Convertir a centavos (la API usa enteros)
+  const amountCents = Math.round(parseFloat(amount) * 100);
 
-    const combinedHeaders = {
-        ...COMMON_HEADERS,
-        ...form.getHeaders()
-    };
+  const data = await runCurlCommand({
+      action: 'DepositMoney',
+      token: token,
+      childid: childId,
+      amount: amountCents,
+      currency: PLATFORM_CURRENCY
+  });
 
-    const response = await fetch(PLATFORM_URL, {
-        method: 'POST',
-        headers: combinedHeaders,
-        body: form
-    });
-
-    let data = await response.text();
-    if (data.includes('{')) {
-        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
-    }
-
-    console.log("📩 [API] Deposit Response:", JSON.stringify(data));
-
-    if (data && data.success) {
+  if (data && data.success) {
       console.log(`✅ [API] Carga OK.`);
       return { success: true };
-    } else {
-      return { success: false, error: data.error || 'API Error' };
-    }
-  } catch (err) {
-    console.error("❌ [API] Error Deposit:", err.message);
-    return { success: false, error: err.message };
+  } else {
+      console.error(`❌ [API] Error en carga:`, JSON.stringify(data));
+      return { success: false, error: data?.error || 'Unknown API Error' };
   }
 }
+
 
 // ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
@@ -537,4 +514,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Fetch Edition) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (CURL NATIVO) Activo en puerto ${PORT}`));
