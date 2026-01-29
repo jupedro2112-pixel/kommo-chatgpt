@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const axios = require('axios'); // Solo para Chatwoot
-const { exec } = require('child_process'); // <--- LA CLAVE: Ejecutar comandos de sistema
+const axios = require('axios');
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
@@ -51,134 +50,126 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (MODO CURL NATIVO) ==================
+// ================== INTEGRACIÓN PLATAFORMA (EMULACIÓN TOTAL) ==================
 
-/**
- * Ejecuta una petición usando CURL del sistema operativo.
- * Esto evita problemas de librerías y replica exactamente tu prueba exitosa en CMD.
- */
-function runCurlCommand(params) {
-    return new Promise((resolve) => {
-        // Construimos los flags -F (Multipart Form Data)
-        let formArgs = '';
-        for (const [key, value] of Object.entries(params)) {
-            // Limpiamos el valor de comillas para evitar errores de bash
-            const safeValue = String(value).replace(/"/g, '\\"');
-            formArgs += ` -F "${key}=${safeValue}"`;
-        }
+// Cliente Axios con soporte de Cookies y Headers de Navegador Real
+const apiClient = axios.create({
+  baseURL: PLATFORM_URL,
+  withCredentials: true, // Importante para cookies
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', // CAMBIO CLAVE
+    'X-Requested-With': 'XMLHttpRequest', // CAMBIO CLAVE: Evita redirección HTML
+    'Origin': 'https://admin.agentesadmin.bet',
+    'Referer': 'https://admin.agentesadmin.bet/'
+  }
+});
 
-        // El comando exacto con headers de navegador
-        const command = `curl -s -L -X POST "${PLATFORM_URL}" \
-        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-        -H "Origin: https://admin.agentesadmin.bet" \
-        -H "Referer: https://admin.agentesadmin.bet/" \
-        ${formArgs}`;
-
-        exec(command, (error, stdout, stderr) => {
-            if (error) {
-                console.error(`❌ Curl Error de Ejecución: ${error.message}`);
-                return resolve(null);
-            }
-
-            const output = stdout.toString().trim();
-            
-            // Intentamos encontrar JSON en la respuesta
-            try {
-                if (output.includes('{')) {
-                    // Extraer solo la parte JSON (por si curl trae basura extra)
-                    const jsonStr = output.substring(output.indexOf('{'), output.lastIndexOf('}') + 1);
-                    const data = JSON.parse(jsonStr);
-                    resolve(data);
-                } else {
-                    console.log(`⚠️ Curl devolvió algo que no es JSON: ${output.substring(0, 100)}...`);
-                    resolve(null);
-                }
-            } catch (e) {
-                console.error("❌ Error parseando JSON de curl:", e.message);
-                resolve(null);
-            }
-        });
-    });
-}
-
-// 1. LOGIN
 async function getPlatformToken() {
-  console.log(`🔄 [API] Ejecutando Login con CURL...`);
+  console.log(`🔄 [API] Login (Modo Navegador)...`);
   
-  const data = await runCurlCommand({
-      action: 'LOGIN',
-      username: PLATFORM_USER,
-      password: PLATFORM_PASS
-  });
+  try {
+    // Usamos URLSearchParams para enviar datos como formulario clásico (x-www-form-urlencoded)
+    const params = new URLSearchParams();
+    params.append('action', 'LOGIN');
+    params.append('username', PLATFORM_USER);
+    params.append('password', PLATFORM_PASS);
 
-  if (data && data.success && data.token) {
-      console.log("✅ [API] Login Exitoso.");
+    const resp = await apiClient.post('', params);
+
+    // Verificamos si es HTML
+    if (typeof resp.data === 'string' && resp.data.trim().startsWith('<')) {
+        console.error("❌ [API] El servidor devolvió HTML. Posible bloqueo de IP o User-Agent.");
+        // Intento desesperado: Parsear JSON si está oculto en el HTML
+        try {
+             const jsonMatch = resp.data.match(/\{.*\}/s);
+             if (jsonMatch) {
+                 const json = JSON.parse(jsonMatch[0]);
+                 if (json.token) return json.token;
+             }
+        } catch(e) {}
+        return null;
+    }
+
+    const data = resp.data;
+    console.log("📩 [API] Login Response:", JSON.stringify(data));
+
+    if (data && data.success && data.token) {
       return data.token;
-  } else {
-      console.error("❌ [API] Login falló:", JSON.stringify(data));
-      return null;
+    }
+    return null;
+  } catch (err) {
+    console.error("❌ [API] Error Login:", err.message);
+    return null;
   }
 }
 
-// 2. BUSCAR ID DE USUARIO (showusers)
 async function getUserIdByName(token, targetUsername) {
   console.log(`🔎 [API] Buscando ID para: ${targetUsername}`);
-  
-  const data = await runCurlCommand({
-      action: 'showusers',
-      token: token,
-      username: targetUsername
-  });
+  try {
+    const params = new URLSearchParams();
+    params.append('action', 'showusers');
+    params.append('token', token);
+    params.append('username', targetUsername);
 
-  if (!data) return null;
+    const resp = await apiClient.post('', params);
+    const data = resp.data;
 
-  // La API suele devolver array en 'users' o 'data'
-  const usersList = data.users || data.data || [];
-  
-  if (Array.isArray(usersList)) {
-      const found = usersList.find(u => 
-          String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
-      );
-      if (found && found.user_id) {
-          console.log(`✅ [API] ID encontrado: ${found.user_id}`);
-          return found.user_id;
-      }
+    const usersList = data.users || data.data || [];
+    if (Array.isArray(usersList)) {
+        const found = usersList.find(u => 
+            String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
+        );
+        if (found && found.user_id) {
+            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+            return found.user_id;
+        }
+    }
+    console.error("❌ [API] Usuario no encontrado.");
+    return null;
+  } catch (err) {
+    console.error("❌ [API] Error buscando usuario:", err.message);
+    return null;
   }
-  
-  console.error("❌ [API] Usuario no encontrado en la lista.");
-  return null;
 }
 
-// 3. DEPOSITAR (DepositMoney)
 async function creditUserBalance(username, amount) {
-  console.log(`💰 [API] Proceso de carga: $${amount} a ${username}`);
+  console.log(`💰 [API] Cargando $${amount} a ${username}`);
   
   const token = await getPlatformToken();
-  if (!token) return { success: false, error: 'Login Failed' };
+  if (!token) return { success: false, error: 'Login Failed (IP Block or HTML Response)' };
 
   const childId = await getUserIdByName(token, username);
   if (!childId) return { success: false, error: 'User Not Found' };
 
-  // Convertir a centavos (la API usa enteros)
-  const amountCents = Math.round(parseFloat(amount) * 100);
+  try {
+    const amountCents = Math.round(parseFloat(amount) * 100);
+    
+    const params = new URLSearchParams();
+    params.append('action', 'DepositMoney');
+    params.append('token', token);
+    params.append('childid', childId);
+    params.append('amount', amountCents);
+    params.append('currency', PLATFORM_CURRENCY);
 
-  const data = await runCurlCommand({
-      action: 'DepositMoney',
-      token: token,
-      childid: childId,
-      amount: amountCents,
-      currency: PLATFORM_CURRENCY
-  });
+    const resp = await apiClient.post('', params);
+    const data = resp.data;
 
-  if (data && data.success) {
+    console.log("📩 [API] Deposit Response:", JSON.stringify(data));
+
+    if (data && data.success) {
       console.log(`✅ [API] Carga OK.`);
       return { success: true };
-  } else {
-      console.error(`❌ [API] Error en carga:`, JSON.stringify(data));
-      return { success: false, error: data?.error || 'Unknown API Error' };
+    } else {
+      return { success: false, error: data.error || 'API Error' };
+    }
+  } catch (err) {
+    console.error("❌ [API] Error Deposit:", err.message);
+    return { success: false, error: err.message };
   }
 }
-
 
 // ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
@@ -514,4 +505,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (CURL NATIVO) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Browser Mode) Activo en puerto ${PORT}`));
