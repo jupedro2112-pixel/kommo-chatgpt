@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const FormData = require('form-data'); // Usamos FormData porque tu curl -F funcionó
+const FormData = require('form-data');
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
@@ -29,10 +29,11 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-// URL CONFIRMADA POR TU CURL
+// DATOS PLATAFORMA (API ADMIN)
 const PLATFORM_URL = "https://admin.agentesadmin.bet/api/admin/"; 
 const PLATFORM_USER = process.env.PLATFORM_USER; 
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
+const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS'; // Moneda por defecto
 
 if (!PLATFORM_USER || !PLATFORM_PASS) {
   console.error("❌ Faltan credenciales PLATFORM_USER/PASS");
@@ -51,98 +52,123 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (IMITANDO CURL) ==================
+// ================== INTEGRACIÓN PLATAFORMA (FLUJO COMPLETO) ==================
 
-// Headers que hicieron funcionar tu CURL
+// Headers base para imitar navegador
 const COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Origin': 'https://admin.agentesadmin.bet',
-    'Referer': 'https://admin.agentesadmin.bet/' // Agregamos Referer por seguridad
+    'Referer': 'https://admin.agentesadmin.bet/'
 };
 
+// 1. LOGIN: Obtener Token
 async function getPlatformToken() {
-  console.log(`🔄 [API] Login (FormData)...`);
-  
   try {
     const form = new FormData();
     form.append('action', 'LOGIN');
     form.append('username', PLATFORM_USER);
     form.append('password', PLATFORM_PASS);
 
-    // IMPORTANTE: Combinar headers manuales con los generados por form-data
-    const headers = {
-        ...COMMON_HEADERS,
-        ...form.getHeaders()
-    };
-
+    const headers = { ...COMMON_HEADERS, ...form.getHeaders() };
     const resp = await axios.post(PLATFORM_URL, form, { headers });
 
-    // Lógica de limpieza de respuesta (por si devuelve HTML sucio)
+    // Limpieza de respuesta (por si viene HTML sucio)
     let data = resp.data;
-    if (typeof data === 'string') {
-        try { 
-             if (data.includes('{')) {
-                const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
-                data = JSON.parse(jsonPart);
-             }
-        } catch(e) {}
+    if (typeof data === 'string' && data.includes('{')) {
+        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
     }
-
-    const logData = typeof data === 'object' ? JSON.stringify(data) : String(data).substring(0, 150);
-    console.log("📩 [API] Login Response:", logData);
 
     if (data && data.success && data.token) {
+      console.log("✅ [API] Login OK. Token obtenido.");
       return data.token;
-    } else {
-      console.error("❌ [API] Login falló:", data);
-      return null;
     }
+    console.error("❌ [API] Login falló:", data);
+    return null;
   } catch (err) {
     console.error("❌ [API] Error HTTP Login:", err.message);
     return null;
   }
 }
 
-async function creditUserBalance(username, amount) {
-  console.log(`💰 [API] Cargando $${amount} a ${username}`);
-  
-  const token = await getPlatformToken();
-  if (!token) {
-    return { success: false, error: 'Login Failed' };
-  }
-
+// 2. BUSCAR USUARIO: Obtener ID numérico
+async function getUserIdByName(token, targetUsername) {
+  console.log(`🔎 [API] Buscando ID para usuario: ${targetUsername}...`);
   try {
     const form = new FormData();
-    form.append('action', 'DEPOSIT'); 
+    form.append('action', 'showusers');
     form.append('token', token);
-    form.append('username', username);
-    form.append('amount', amount.toString());
+    form.append('username', targetUsername); // Filtro de API
 
-    const headers = {
-        ...COMMON_HEADERS,
-        ...form.getHeaders()
-    };
-
+    const headers = { ...COMMON_HEADERS, ...form.getHeaders() };
     const resp = await axios.post(PLATFORM_URL, form, { headers });
 
     let data = resp.data;
-    if (typeof data === 'string') {
-        try { 
-             if (data.includes('{')) {
-                const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
-                data = JSON.parse(jsonPart);
-             }
-        } catch(e) {}
+    if (typeof data === 'string' && data.includes('{')) {
+        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+    }
+
+    // La API suele devolver un array en "users" o "data"
+    const usersList = data.users || data.data || [];
+    
+    // Buscamos coincidencia EXACTA
+    if (Array.isArray(usersList)) {
+        const found = usersList.find(u => 
+            String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
+        );
+        
+        if (found && found.user_id) {
+            console.log(`✅ [API] ID encontrado: ${found.user_id} para ${found.user_name}`);
+            return found.user_id;
+        }
+    }
+    
+    console.error("❌ [API] Usuario no encontrado o lista vacía.");
+    return null;
+  } catch (err) {
+    console.error("❌ [API] Error buscando usuario:", err.message);
+    return null;
+  }
+}
+
+// 3. DEPOSITAR DINERO (Ciclo completo)
+async function creditUserBalance(username, amount) {
+  console.log(`💰 [API] Iniciando proceso de carga: $${amount} a ${username}`);
+  
+  // PASO 1: Login
+  const token = await getPlatformToken();
+  if (!token) return { success: false, error: 'Login Failed' };
+
+  // PASO 2: Obtener ID (childid)
+  const childId = await getUserIdByName(token, username);
+  if (!childId) return { success: false, error: 'User Not Found in Platform' };
+
+  // PASO 3: Ejecutar Depósito (En centavos)
+  try {
+    const amountCents = Math.round(parseFloat(amount) * 100); // REGLA DE ORO: CENTAVOS
+    
+    const form = new FormData();
+    form.append('action', 'DepositMoney'); // Acción correcta descubierta
+    form.append('token', token);
+    form.append('childid', childId); // Usamos ID, no username
+    form.append('amount', amountCents);
+    form.append('currency', PLATFORM_CURRENCY);
+
+    const headers = { ...COMMON_HEADERS, ...form.getHeaders() };
+    const resp = await axios.post(PLATFORM_URL, form, { headers });
+
+    let data = resp.data;
+    if (typeof data === 'string' && data.includes('{')) {
+        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
     }
 
     console.log("📩 [API] Deposit Response:", JSON.stringify(data));
 
     if (data && data.success) {
-      console.log(`✅ [API] Carga OK.`);
+      console.log(`✅ [API] Carga REALIZADA: $${amount} (${amountCents} centavos) a ID ${childId}`);
       return { success: true };
     } else {
       console.error(`❌ [API] Carga Rechazada:`, data);
-      return { success: false, error: data.error || 'API Error' };
+      return { success: false, error: data.error || 'Unknown API Error' };
     }
   } catch (err) {
     console.error("❌ [API] Error HTTP Deposit:", err.message);
@@ -375,11 +401,13 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
+  // USUARIO CONOCIDO -> VERIFICAR Y CARGAR
   if (activeUsername) {
     console.log(`⚡ Procesando usuario conocido: ${activeUsername}`);
     const result = await checkUserInSheets(activeUsername);
     
     if (result.status === 'success') {
+      // 🚀 AQUI LLAMAMOS A LA NUEVA FUNCION DE CARGA
       const apiResult = await creditUserBalance(activeUsername, result.bonus);
       
       if (apiResult.success) {
@@ -406,6 +434,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
+  // BUSCAR USUARIO EN MENSAJE
   const msgLower = fullMessage.toLowerCase();
   if (msgLower.includes('no') && (msgLower.includes('recuerdo') || msgLower.includes('se')) && msgLower.includes('usuario')) {
       await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal.");
@@ -443,6 +472,7 @@ async function processConversation(accountId, conversationId, contactId, contact
       }
     }
   } else {
+    // CHARLA CASUAL
     const reply = await generateCasualChat(fullMessage);
     await sendReplyToChatwoot(accountId, conversationId, reply);
   }
@@ -483,4 +513,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (API FULL) Activo en puerto ${PORT}`));
