@@ -397,7 +397,7 @@ async function generateCheckResult(username, status, data = {}) {
   let systemPrompt = `Sos agente de casino. Usuario: "${username}". Sé breve.`;
 
   if (status === 'not_found') {
-    systemPrompt += ` Usuario NO encontrado en la base de ayer. Pedile que verifique escritura.`;
+    systemPrompt += ` Usuario NO encontrado en base de ayer. Pedile que verifique escritura.`;
   } else if (status === 'claimed') {
     systemPrompt += ` Ya reclamó hoy. Decile que ya fue procesado.`;
   } else if (status === 'no_balance') {
