@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const FormData = require('form-data');
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
@@ -28,7 +29,9 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-const PLATFORM_URL = "https://admin.agentesadmin.bet/api/admin/"; 
+const PLATFORM_ROOT = "https://admin.agentesadmin.bet/"; // Para obtener cookies iniciales
+const PLATFORM_API_URL = "https://admin.agentesadmin.bet/api/admin/"; 
+
 const PLATFORM_USER = process.env.PLATFORM_USER; 
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
@@ -50,126 +53,195 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (EMULACIÓN TOTAL) ==================
+// ================== INTEGRACIÓN PLATAFORMA (SESSION MANAGER) ==================
 
-// Cliente Axios con soporte de Cookies y Headers de Navegador Real
-const apiClient = axios.create({
-  baseURL: PLATFORM_URL,
-  withCredentials: true, // Importante para cookies
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', // CAMBIO CLAVE
-    'X-Requested-With': 'XMLHttpRequest', // CAMBIO CLAVE: Evita redirección HTML
-    'Origin': 'https://admin.agentesadmin.bet',
-    'Referer': 'https://admin.agentesadmin.bet/'
-  }
-});
+// Almacén de cookies global (Simula ser un navegador abierto)
+let GLOBAL_COOKIES = [];
 
+function updateCookies(response) {
+    const rawCookies = response.headers['set-cookie'];
+    if (rawCookies) {
+        rawCookies.forEach(c => {
+            const keyVal = c.split(';')[0];
+            // Evitamos duplicados básicos
+            if (!GLOBAL_COOKIES.includes(keyVal)) {
+                GLOBAL_COOKIES.push(keyVal);
+            }
+        });
+        console.log("🍪 Cookies actualizadas:", GLOBAL_COOKIES.length);
+    }
+}
+
+function getCookieHeader() {
+    return GLOBAL_COOKIES.join('; ');
+}
+
+// 1. INICIALIZAR SESIÓN (Evita redirección HTML)
+async function warmUpSession() {
+    console.log("🔥 [API] Calentando sesión (GET Root)...");
+    try {
+        const resp = await axios.get(PLATFORM_ROOT, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        updateCookies(resp);
+        return true;
+    } catch (err) {
+        console.error("⚠️ Error calentando sesión:", err.message);
+        return false;
+    }
+}
+
+// 2. LOGIN (Usando Cookies previas)
 async function getPlatformToken() {
-  console.log(`🔄 [API] Login (Modo Navegador)...`);
-  
-  try {
-    // Usamos URLSearchParams para enviar datos como formulario clásico (x-www-form-urlencoded)
-    const params = new URLSearchParams();
-    params.append('action', 'LOGIN');
-    params.append('username', PLATFORM_USER);
-    params.append('password', PLATFORM_PASS);
+    // Paso 0: Asegurar cookies
+    if (GLOBAL_COOKIES.length === 0) {
+        await warmUpSession();
+    }
 
-    const resp = await apiClient.post('', params);
+    console.log(`🔄 [API] Login con Cookies...`);
+    
+    try {
+        const form = new FormData();
+        form.append('action', 'LOGIN');
+        form.append('username', PLATFORM_USER);
+        form.append('password', PLATFORM_PASS);
 
-    // Verificamos si es HTML
-    if (typeof resp.data === 'string' && resp.data.trim().startsWith('<')) {
-        console.error("❌ [API] El servidor devolvió HTML. Posible bloqueo de IP o User-Agent.");
-        // Intento desesperado: Parsear JSON si está oculto en el HTML
-        try {
-             const jsonMatch = resp.data.match(/\{.*\}/s);
-             if (jsonMatch) {
-                 const json = JSON.parse(jsonMatch[0]);
-                 if (json.token) return json.token;
-             }
-        } catch(e) {}
+        const resp = await axios.post(PLATFORM_API_URL, form, {
+            headers: {
+                ...form.getHeaders(),
+                'Cookie': getCookieHeader(), // <--- LA CLAVE
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Origin': 'https://admin.agentesadmin.bet',
+                'Referer': 'https://admin.agentesadmin.bet/',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
+
+        updateCookies(resp); // Guardamos nuevas cookies de sesión logueada
+
+        // Verificación de respuesta
+        let data = resp.data;
+        if (typeof data === 'string' && data.includes('{')) {
+            try { 
+                const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
+                data = JSON.parse(jsonPart);
+            } catch(e) {}
+        }
+
+        // Si devuelve HTML, estamos bloqueados
+        if (typeof data === 'string' && data.trim().startsWith('<')) {
+            console.error("❌ [API] Login bloqueado (HTML Response). Intentando limpiar cookies y reintentar...");
+            GLOBAL_COOKIES = []; // Reset y reintento
+            return null;
+        }
+
+        console.log("📩 [API] Login Response:", JSON.stringify(data));
+
+        if (data && data.success && data.token) {
+            return data.token;
+        } else {
+            console.error("❌ [API] Login falló:", data);
+            return null;
+        }
+    } catch (err) {
+        console.error("❌ [API] Error HTTP Login:", err.message);
         return null;
     }
-
-    const data = resp.data;
-    console.log("📩 [API] Login Response:", JSON.stringify(data));
-
-    if (data && data.success && data.token) {
-      return data.token;
-    }
-    return null;
-  } catch (err) {
-    console.error("❌ [API] Error Login:", err.message);
-    return null;
-  }
 }
 
+// 3. BUSCAR USUARIO
 async function getUserIdByName(token, targetUsername) {
-  console.log(`🔎 [API] Buscando ID para: ${targetUsername}`);
-  try {
-    const params = new URLSearchParams();
-    params.append('action', 'showusers');
-    params.append('token', token);
-    params.append('username', targetUsername);
+    console.log(`🔎 [API] Buscando ID para: ${targetUsername}`);
+    try {
+        const form = new FormData();
+        form.append('action', 'showusers');
+        form.append('token', token);
+        form.append('username', targetUsername);
 
-    const resp = await apiClient.post('', params);
-    const data = resp.data;
+        const resp = await axios.post(PLATFORM_API_URL, form, {
+            headers: {
+                ...form.getHeaders(),
+                'Cookie': getCookieHeader(),
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
 
-    const usersList = data.users || data.data || [];
-    if (Array.isArray(usersList)) {
-        const found = usersList.find(u => 
-            String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
-        );
-        if (found && found.user_id) {
-            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
-            return found.user_id;
+        let data = resp.data;
+        if (typeof data === 'string' && data.includes('{')) {
+            try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
         }
+
+        const usersList = data.users || data.data || [];
+        if (Array.isArray(usersList)) {
+            const found = usersList.find(u => 
+                String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
+            );
+            if (found && found.user_id) {
+                console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+                return found.user_id;
+            }
+        }
+        console.error("❌ [API] Usuario no encontrado.");
+        return null;
+    } catch (err) {
+        console.error("❌ [API] Error buscando usuario:", err.message);
+        return null;
     }
-    console.error("❌ [API] Usuario no encontrado.");
-    return null;
-  } catch (err) {
-    console.error("❌ [API] Error buscando usuario:", err.message);
-    return null;
-  }
 }
 
+// 4. DEPOSITAR
 async function creditUserBalance(username, amount) {
-  console.log(`💰 [API] Cargando $${amount} a ${username}`);
-  
-  const token = await getPlatformToken();
-  if (!token) return { success: false, error: 'Login Failed (IP Block or HTML Response)' };
-
-  const childId = await getUserIdByName(token, username);
-  if (!childId) return { success: false, error: 'User Not Found' };
-
-  try {
-    const amountCents = Math.round(parseFloat(amount) * 100);
+    console.log(`💰 [API] Cargando $${amount} a ${username}`);
     
-    const params = new URLSearchParams();
-    params.append('action', 'DepositMoney');
-    params.append('token', token);
-    params.append('childid', childId);
-    params.append('amount', amountCents);
-    params.append('currency', PLATFORM_CURRENCY);
+    // Login fresco
+    const token = await getPlatformToken();
+    if (!token) return { success: false, error: 'Login Failed (Check Credentials or WAF)' };
 
-    const resp = await apiClient.post('', params);
-    const data = resp.data;
+    // Buscar ID
+    const childId = await getUserIdByName(token, username);
+    if (!childId) return { success: false, error: 'User Not Found' };
 
-    console.log("📩 [API] Deposit Response:", JSON.stringify(data));
+    try {
+        const amountCents = Math.round(parseFloat(amount) * 100);
+        
+        const form = new FormData();
+        form.append('action', 'DepositMoney');
+        form.append('token', token);
+        form.append('childid', childId);
+        form.append('amount', amountCents);
+        form.append('currency', PLATFORM_CURRENCY);
 
-    if (data && data.success) {
-      console.log(`✅ [API] Carga OK.`);
-      return { success: true };
-    } else {
-      return { success: false, error: data.error || 'API Error' };
+        const resp = await axios.post(PLATFORM_API_URL, form, {
+            headers: {
+                ...form.getHeaders(),
+                'Cookie': getCookieHeader(),
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
+
+        let data = resp.data;
+        if (typeof data === 'string' && data.includes('{')) {
+            try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+        }
+
+        console.log("📩 [API] Deposit Response:", JSON.stringify(data));
+
+        if (data && data.success) {
+            console.log(`✅ [API] Carga OK.`);
+            return { success: true };
+        } else {
+            return { success: false, error: data.error || 'API Error' };
+        }
+    } catch (err) {
+        console.error("❌ [API] Error Deposit:", err.message);
+        return { success: false, error: err.message };
     }
-  } catch (err) {
-    console.error("❌ [API] Error Deposit:", err.message);
-    return { success: false, error: err.message };
-  }
 }
+
 
 // ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
@@ -329,53 +401,6 @@ async function generateAfterCare(message, username) {
   } catch (err) { return 'Tu reintegro ya está listo. Volvé mañana.'; }
 }
 
-// ================== NEGOCIO ==================
-async function checkUserInSheets(username) {
-  const lookupKey = username.toLowerCase().trim();
-  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
-  const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
-  
-  const foundIndices = [];
-  let userTotals = { deposits: 0, withdrawals: 0 };
-
-  for (let i = 0; i < rows.length; i++) {
-    const rowUser = String(rows[i][1] || '').toLowerCase().trim();
-    if (rowUser === lookupKey) {
-      foundIndices.push(i);
-      const type = String(rows[i][0] || '').toLowerCase();
-      const amount = parseFloat(String(rows[i][2] || '0').replace(/[^0-9.-]/g, '')) || 0;
-      if (type.includes('deposit') || type.includes('depósito') || type.includes('carga')) {
-        userTotals.deposits += amount;
-      } else if (type.includes('withdraw') || type.includes('retiro') || type.includes('retir')) {
-        userTotals.withdrawals += amount;
-      }
-    }
-  }
-
-  if (foundIndices.length === 0) return { status: 'not_found' };
-
-  let alreadyClaimed = false;
-  for (const idx of foundIndices) {
-    if (String(rows[idx][4] || '').toLowerCase().includes('reclam')) {
-      alreadyClaimed = true;
-      break;
-    }
-  }
-  if (alreadyClaimed) return { status: 'claimed', username };
-
-  const net = userTotals.deposits - userTotals.withdrawals;
-  if (net <= 1) return { status: 'no_balance', net: net.toFixed(2), username, indices: foundIndices };
-
-  return { 
-    status: 'success', 
-    net: net.toFixed(2), 
-    bonus: (net * 0.08).toFixed(2), 
-    username, 
-    indices: foundIndices,
-    spreadsheetId 
-  };
-}
-
 // ================== PROCESAMIENTO ==================
 async function processConversation(accountId, conversationId, contactId, contactName, fullMessage) {
   console.log(`🤖 Msg: "${fullMessage}" | ContactName: "${contactName}"`);
@@ -505,4 +530,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Browser Mode) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Session Mode) Activo en puerto ${PORT}`));
