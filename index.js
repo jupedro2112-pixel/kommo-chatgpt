@@ -50,178 +50,169 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (HARDCORE HEADERS) ==================
+// ================== INTEGRACIÓN PLATAFORMA (RÉPLICA EXACTA WINDOWS) ==================
 
-/**
- * Función auxiliar para codificar body x-www-form-urlencoded manualmente.
- * Esto evita que axios manipule los datos de forma extraña.
- */
+// Helper para x-www-form-urlencoded
 function toFormUrlEncoded(data) {
     return Object.keys(data).map(key => {
         return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
     }).join('&');
 }
 
-// Configuración de Axios para parecer Chrome Windows
+// Cliente Axios idéntico a tu prueba exitosa
 const apiClient = axios.create({
   baseURL: PLATFORM_URL,
-  maxRedirects: 0, // No seguir redirecciones automáticas (para detectar el 302 a HTML)
-  validateStatus: function (status) {
-    return status >= 200 && status < 500; // Aceptar todos los status para ver qué pasa
-  },
+  maxRedirects: 0,
+  validateStatus: function (status) { return status >= 200 && status < 500; },
   headers: {
     'Host': 'admin.agentesadmin.bet',
     'Connection': 'keep-alive',
     'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
     'Accept': 'application/json, text/plain, */*',
     'Content-Type': 'application/x-www-form-urlencoded',
-    'X-Requested-With': 'XMLHttpRequest',
-    'sec-ch-ua-mobile': '?0',
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'sec-ch-ua-platform': '"Windows"',
     'Origin': 'https://admin.agentesadmin.bet',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Dest': 'empty',
     'Referer': 'https://admin.agentesadmin.bet/',
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
   }
 });
 
 let SESSION_COOKIE = null;
 
-async function getPlatformToken() {
-  console.log(`🔄 [API] Login (Hardcore Headers)...`);
-  
-  try {
-    const bodyData = toFormUrlEncoded({
-        action: 'LOGIN',
-        username: PLATFORM_USER,
-        password: PLATFORM_PASS
-    });
+// Función para obtener Login + Tu ID de Admin
+async function performLogin() {
+    console.log("🔄 [API] Ejecutando Login...");
+    
+    try {
+        const body = toFormUrlEncoded({ 
+            action: 'LOGIN', 
+            username: PLATFORM_USER, 
+            password: PLATFORM_PASS 
+        });
 
-    const headers = {};
-    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
+        // Agregamos cookie si ya existe
+        const headers = {};
+        if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
 
-    const resp = await apiClient.post('', bodyData, { headers });
+        const resp = await apiClient.post('', body, { headers });
 
-    // Guardar cookies si las hay
-    if (resp.headers['set-cookie']) {
-        SESSION_COOKIE = resp.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
-        console.log("🍪 Nueva Cookie guardada:", SESSION_COOKIE);
-    }
+        // Guardar/Actualizar Cookie
+        if (resp.headers['set-cookie']) {
+            SESSION_COOKIE = resp.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+        }
 
-    let data = resp.data;
+        let data = resp.data;
+        if (typeof data === 'string') {
+             try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+        }
 
-    // Si devuelve HTML o redirección
-    if (typeof data === 'string' && (data.includes('<!doctype html>') || data.includes('<html'))) {
-        console.error("❌ [API] Bloqueo detectado (HTML Response).");
+        if (data && data.success && data.token) {
+            console.log("✅ [API] Login OK.");
+            return { 
+                token: data.token, 
+                adminId: data.user ? data.user.user_id : null 
+            };
+        }
+        
+        console.error("❌ [API] Login falló:", data);
+        return null;
+    } catch (err) {
+        console.error("❌ [API] Error Login:", err.message);
         return null;
     }
-
-    // Limpieza de JSON sucio
-    if (typeof data === 'string') {
-        try { 
-             if (data.includes('{')) {
-                const jsonPart = data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1);
-                data = JSON.parse(jsonPart);
-             }
-        } catch(e) {}
-    }
-
-    console.log("📩 [API] Login Response:", JSON.stringify(data));
-
-    if (data && data.success && data.token) {
-      return data.token;
-    } else {
-      console.error("❌ [API] Login falló:", data);
-      return null;
-    }
-  } catch (err) {
-    console.error("❌ [API] Error HTTP Login:", err.message);
-    return null;
-  }
 }
 
-async function getUserIdByName(token, targetUsername) {
-  console.log(`🔎 [API] Buscando ID para: ${targetUsername}`);
-  try {
-    const bodyData = toFormUrlEncoded({
-        action: 'showusers',
-        token: token,
-        username: targetUsername
-    });
+// Función Búsqueda exacta (Con los parámetros mágicos tree/parentid)
+async function getUserIdByName(token, adminId, targetUsername) {
+    console.log(`🔎 [API] Buscando usuario: ${targetUsername} (AdminID: ${adminId})...`);
+    
+    try {
+        const body = toFormUrlEncoded({
+            action: 'ShowUsers',       // Mayúsculas importantes
+            token: token,
+            page: 1,
+            pagesize: 30,
+            viewtype: 'tree',          // CLAVE
+            username: targetUsername,
+            showhidden: 'false',
+            parentid: adminId          // CLAVE
+        });
 
-    const headers = {};
-    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
+        const headers = {};
+        if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
 
-    const resp = await apiClient.post('', bodyData, { headers });
-    let data = resp.data;
+        const resp = await apiClient.post('', body, { headers });
 
-    if (typeof data === 'string' && data.includes('{')) {
-        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
-    }
+        let data = resp.data;
+        if (typeof data === 'string') {
+             try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+        }
 
-    const usersList = data.users || data.data || [];
-    if (Array.isArray(usersList)) {
-        const found = usersList.find(u => 
-            String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim()
-        );
+        const list = data.users || data.data || (Array.isArray(data) ? data : []);
+        
+        const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
+
         if (found && found.user_id) {
-            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+            console.log(`✅ [API] Encontrado ID: ${found.user_id}`);
             return found.user_id;
         }
+        
+        console.error(`❌ [API] No encontrado. Lista recibida: ${list.length} usuarios.`);
+        return null;
+    } catch (err) {
+        console.error("❌ [API] Error Búsqueda:", err.message);
+        return null;
     }
-    console.error("❌ [API] Usuario no encontrado.");
-    return null;
-  } catch (err) {
-    console.error("❌ [API] Error buscando usuario:", err.message);
-    return null;
-  }
 }
 
+// Función Principal de Carga
 async function creditUserBalance(username, amount) {
-  console.log(`💰 [API] Cargando $${amount} a ${username}`);
-  
-  const token = await getPlatformToken();
-  if (!token) return { success: false, error: 'Login Failed (WAF Block)' };
-
-  const childId = await getUserIdByName(token, username);
-  if (!childId) return { success: false, error: 'User Not Found' };
-
-  try {
-    const amountCents = Math.round(parseFloat(amount) * 100);
+    console.log(`💰 [API] Proceso de carga: $${amount} a ${username}`);
     
-    const bodyData = toFormUrlEncoded({
-        action: 'DepositMoney',
-        token: token,
-        childid: childId,
-        amount: amountCents,
-        currency: PLATFORM_CURRENCY
-    });
-
-    const headers = {};
-    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
-
-    const resp = await apiClient.post('', bodyData, { headers });
-    let data = resp.data;
-
-    if (typeof data === 'string' && data.includes('{')) {
-        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+    // 1. LOGIN
+    const loginData = await performLogin();
+    if (!loginData || !loginData.token || !loginData.adminId) {
+        return { success: false, error: 'Login Failed or No Admin ID' };
     }
 
-    console.log("📩 [API] Deposit Response:", JSON.stringify(data));
-
-    if (data && data.success) {
-      console.log(`✅ [API] Carga OK.`);
-      return { success: true };
-    } else {
-      return { success: false, error: data.error || 'API Error' };
+    // 2. BUSCAR USUARIO
+    const childId = await getUserIdByName(loginData.token, loginData.adminId, username);
+    if (!childId) {
+        return { success: false, error: 'User Not Found in Tree' };
     }
-  } catch (err) {
-    console.error("❌ [API] Error Deposit:", err.message);
-    return { success: false, error: err.message };
-  }
+
+    // 3. DEPOSITAR
+    try {
+        const amountCents = Math.round(parseFloat(amount) * 100);
+        
+        const body = toFormUrlEncoded({
+            action: 'DepositMoney',
+            token: loginData.token,
+            childid: childId,
+            amount: amountCents,
+            currency: PLATFORM_CURRENCY
+        });
+
+        const headers = {};
+        if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
+
+        const resp = await apiClient.post('', body, { headers });
+
+        let data = resp.data;
+        if (typeof data === 'string') {
+             try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+        }
+
+        console.log("📩 [API] Resultado:", JSON.stringify(data));
+
+        if (data && data.success) {
+            return { success: true };
+        } else {
+            return { success: false, error: data.error || 'API Error' };
+        }
+    } catch (err) {
+        console.error("❌ [API] Error Deposit:", err.message);
+        return { success: false, error: err.message };
+    }
 }
 
 // ================== GOOGLE SHEETS ==================
@@ -344,7 +335,7 @@ async function generateCheckResult(username, status, data = {}) {
   } else if (status === 'no_balance') {
     systemPrompt += ` Neto ayer: ${data.net}. No tiene saldo negativo suficiente para reintegro.`;
   } else if (status === 'success') {
-    systemPrompt += ` ÉXITO TOTAL. Reintegro ACREDITADO REALMENTE en su cuenta.
+    systemPrompt += ` ��XITO TOTAL. Reintegro ACREDITADO REALMENTE en su cuenta.
     Neto ayer: ${data.net}.
     Monto acreditado: ${data.bonus}.
     Confirmale que YA TIENE LA PLATA en su usuario y puede jugar.`;
@@ -380,6 +371,53 @@ async function generateAfterCare(message, username) {
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) { return 'Tu reintegro ya está listo. Volvé mañana.'; }
+}
+
+// ================== NEGOCIO ==================
+async function checkUserInSheets(username) {
+  const lookupKey = username.toLowerCase().trim();
+  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
+  const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
+  
+  const foundIndices = [];
+  let userTotals = { deposits: 0, withdrawals: 0 };
+
+  for (let i = 0; i < rows.length; i++) {
+    const rowUser = String(rows[i][1] || '').toLowerCase().trim();
+    if (rowUser === lookupKey) {
+      foundIndices.push(i);
+      const type = String(rows[i][0] || '').toLowerCase();
+      const amount = parseFloat(String(rows[i][2] || '0').replace(/[^0-9.-]/g, '')) || 0;
+      if (type.includes('deposit') || type.includes('depósito') || type.includes('carga')) {
+        userTotals.deposits += amount;
+      } else if (type.includes('withdraw') || type.includes('retiro') || type.includes('retir')) {
+        userTotals.withdrawals += amount;
+      }
+    }
+  }
+
+  if (foundIndices.length === 0) return { status: 'not_found' };
+
+  let alreadyClaimed = false;
+  for (const idx of foundIndices) {
+    if (String(rows[idx][4] || '').toLowerCase().includes('reclam')) {
+      alreadyClaimed = true;
+      break;
+    }
+  }
+  if (alreadyClaimed) return { status: 'claimed', username };
+
+  const net = userTotals.deposits - userTotals.withdrawals;
+  if (net <= 1) return { status: 'no_balance', net: net.toFixed(2), username, indices: foundIndices };
+
+  return { 
+    status: 'success', 
+    net: net.toFixed(2), 
+    bonus: (net * 0.08).toFixed(2), 
+    username, 
+    indices: foundIndices,
+    spreadsheetId 
+  };
 }
 
 // ================== PROCESAMIENTO ==================
@@ -511,4 +549,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Hardcore Headers) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Casino 24/7 (Replica Exacta) Activo en puerto ${PORT}`));
