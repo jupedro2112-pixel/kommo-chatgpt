@@ -479,13 +479,14 @@ async function creditUserBalance(username, amount) {
   if (!userInfo) return { success: false, error: 'Usuario no encontrado' };
 
   try {
-    const amountPesos = Math.round(parseFloat(amount));
+    // ✅ DepositMoney espera CENTAVOS
+    const amountCents = Math.round(parseFloat(amount) * 100);
 
     const body = toFormUrlEncoded({
       action: 'DepositMoney',
       token: SESSION_TOKEN,
       childid: userInfo.id,
-      amount: amountPesos,
+      amount: amountCents,
       currency: PLATFORM_CURRENCY,
       deposit_type: 'individual_bonus'
     });
