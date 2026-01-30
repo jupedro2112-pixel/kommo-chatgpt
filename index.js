@@ -442,7 +442,7 @@ async function generateCasualChat(message) {
       model: 'gpt-4o-mini',
       temperature: 0.4,
       messages: [
-        { role: 'system', content: `Sos un agente de casino virtual. Breve.` },
+        { role: 'system', content: `Sos un agente de casino virtual. Textos resumidos.` },
         { role: 'user', content: message },
       ],
     });
