@@ -15,7 +15,7 @@ app.use(express.urlencoded({ extended: true }));
 const messageBuffer = new Map(); 
 const userStates = new Map(); 
 
-// Limpieza automática
+// Limpieza automática de memoria
 setInterval(() => {
   const now = Date.now();
   for (const [id, state] of userStates.entries()) {
@@ -52,7 +52,7 @@ const auth = new GoogleAuth({
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
-// ================== INTEGRACIÓN PLATAFORMA (BROWSER MIMIC) ==================
+// ================== INTEGRACIÓN PLATAFORMA (FULL AUTO) ==================
 
 function toFormUrlEncoded(data) {
     return Object.keys(data).map(key => {
@@ -60,6 +60,7 @@ function toFormUrlEncoded(data) {
     }).join('&');
 }
 
+// Almacén de cookies en memoria
 let SESSION_COOKIES = [];
 
 function saveCookies(response) {
@@ -75,10 +76,11 @@ function saveCookies(response) {
                 SESSION_COOKIES.push(cookie);
             }
         });
-        console.log("🍪 Cookies:", SESSION_COOKIES.length);
+        console.log("🍪 Cookies actualizadas:", SESSION_COOKIES.length);
     }
 }
 
+// Cliente simulando Chrome
 const client = axios.create({
     withCredentials: true,
     maxRedirects: 0, 
@@ -94,22 +96,30 @@ const client = axios.create({
     }
 });
 
-// 1. WARM UP
+// 1. CALENTAMIENTO (Visitar Home)
 async function warmUp() {
-    console.log("🔥 [API] Iniciando sesión...");
+    console.log("🔥 [API] Visitando Home para obtener cookies...");
     try {
-        const resp = await client.get(ROOT_URL);
+        const resp = await client.get(ROOT_URL, {
+            headers: {
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none'
+            }
+        });
         saveCookies(resp);
     } catch (err) {
         if (err.response) saveCookies(err.response);
+        else console.error("⚠️ WarmUp error:", err.message);
     }
 }
 
-// 2. LOGIN
+// 2. LOGIN (Automático con Usuario/Pass)
 async function performLogin() {
     if (SESSION_COOKIES.length === 0) await warmUp();
 
-    console.log("🔄 [API] Logueando...");
+    console.log("🔄 [API] Intentando Login...");
     
     try {
         const body = toFormUrlEncoded({
@@ -128,11 +138,10 @@ async function performLogin() {
         saveCookies(resp);
 
         let data = resp.data;
-        if (typeof data === 'string') {
+        if (typeof data === 'string' && data.includes('{')) {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
         }
 
-        // Si es HTML, borramos cookies y fallamos (reintento manual siguiente vez)
         if (typeof data === 'string' && data.trim().startsWith('<')) {
             console.error("❌ [API] Bloqueo (HTML). Reiniciando cookies.");
             SESSION_COOKIES = []; 
@@ -144,6 +153,7 @@ async function performLogin() {
             return { token: data.token, adminId: data.user?.user_id };
         }
         
+        console.error("❌ [API] Login falló:", JSON.stringify(data));
         return null;
     } catch (err) {
         console.error("❌ [API] Error Login:", err.message);
@@ -181,7 +191,10 @@ async function getUserIdByName(token, adminId, targetUsername) {
         const list = data.users || data.data || (Array.isArray(data) ? data : []);
         const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
 
-        if (found && found.user_id) return found.user_id;
+        if (found && found.user_id) {
+            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+            return found.user_id;
+        }
         
         console.error(`❌ [API] Usuario no encontrado.`);
         return null;
@@ -196,10 +209,10 @@ async function creditUserBalance(username, amount) {
     console.log(`💰 [API] Cargando $${amount} a ${username}`);
     
     const loginData = await performLogin();
-    if (!loginData) return { success: false, error: 'Login Failed' };
+    if (!loginData) return { success: false, error: 'Login Failed (Bloqueo WAF o Datos)' };
 
     const childId = await getUserIdByName(loginData.token, loginData.adminId, username);
-    if (!childId) return { success: false, error: 'User Not Found' };
+    if (!childId) return { success: false, error: 'Usuario no encontrado' };
 
     try {
         const amountCents = Math.round(parseFloat(amount) * 100);
@@ -232,6 +245,7 @@ async function creditUserBalance(username, amount) {
             return { success: false, error: data.error || 'API Error' };
         }
     } catch (err) {
+        console.error("❌ [API] Error Depósito:", err.message);
         return { success: false, error: err.message };
     }
 }
@@ -270,7 +284,7 @@ async function markAllUserRowsAsClaimed(spreadsheetId, indices, columnLetter = '
   }
 }
 
-// ================== LÓGICA DE NEGOCIO (¡AGREGADA!) ==================
+// ESTA ES LA FUNCIÓN QUE FALTABA
 async function checkUserInSheets(username) {
   const lookupKey = username.toLowerCase().trim();
   const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
@@ -327,9 +341,9 @@ async function sendReplyToChatwoot(accountId, conversationId, message) {
       message_type: 'outgoing',
       private: false
     }, { headers: { 'api_access_token': CHATWOOT_ACCESS_TOKEN } });
-    console.log(`✅ Respuesta enviada.`);
+    console.log(`✅ Chatwoot Reply Enviado.`);
   } catch (err) {
-    console.error('❌ Error Chatwoot:', err.message);
+    console.error('❌ Chatwoot Send Error:', err.message);
   }
 }
 
@@ -339,7 +353,7 @@ async function updateChatwootContact(accountId, contactId, username) {
     const url = `${CHATWOOT_BASE_URL}/api/v1/accounts/${accountId}/contacts/${contactId}`;
     await axios.put(url, { name: username }, { headers: { 'api_access_token': CHATWOOT_ACCESS_TOKEN } });
   } catch (err) {
-    console.error('❌ Error Rename:', err?.message);
+    console.error('❌ Chatwoot Rename Error:', err?.message);
   }
 }
 
@@ -461,10 +475,9 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  // USUARIO CONOCIDO
   if (activeUsername) {
     console.log(`⚡ Procesando usuario conocido: ${activeUsername}`);
-    const result = await checkUserInSheets(activeUsername); // <--- AQUI ESTABA EL ERROR, AHORA EXISTE
+    const result = await checkUserInSheets(activeUsername);
     
     if (result.status === 'success') {
       const apiResult = await creditUserBalance(activeUsername, result.bonus);
@@ -493,10 +506,16 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
+  const msgLower = fullMessage.toLowerCase();
+  if (msgLower.includes('no') && (msgLower.includes('recuerdo') || msgLower.includes('se')) && msgLower.includes('usuario')) {
+      await sendReplyToChatwoot(accountId, conversationId, "Si no recordás tu usuario, por favor comunicate con nuestro WhatsApp principal.");
+      return;
+  }
+
   const extractedUser = extractUsername(fullMessage);
   if (extractedUser) {
     console.log(`⚡ Usuario en mensaje: ${extractedUser}`);
-    const result = await checkUserInSheets(extractedUser); // <--- AQUI TAMBIEN
+    const result = await checkUserInSheets(extractedUser);
     
     if (result.status === 'success') {
        const apiResult = await creditUserBalance(extractedUser, result.bonus);
@@ -564,4 +583,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot FULL Auto (Fixed) Activo en puerto ${PORT}`));
