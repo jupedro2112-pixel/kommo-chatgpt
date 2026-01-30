@@ -18,16 +18,24 @@ const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
 const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
-const API_URL = "https://admin.agentesadmin.bet/api/admin/"; 
+const API_URL = "https://admin.agentesadmin.bet/api/admin/";
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
 
-// Token Manual desde Render
-const MANUAL_TOKEN = process.env.MANUAL_TOKEN; 
+// Credenciales login automático
+const PLATFORM_USER = process.env.PLATFORM_USER;
+const PLATFORM_PASS = process.env.PLATFORM_PASS;
+
+// Token Manual desde Render (fallback opcional)
+const MANUAL_TOKEN = process.env.MANUAL_TOKEN;
 // Opcional: Si consigues un proxy, lo pones en esta variable en Render
-const PROXY_URL = process.env.PROXY_URL; 
+const PROXY_URL = process.env.PROXY_URL;
+
+if (!PLATFORM_USER || !PLATFORM_PASS) {
+  console.error("⚠️ ADVERTENCIA: Falta PLATFORM_USER o PLATFORM_PASS. Se usará MANUAL_TOKEN si existe.");
+}
 
 if (!MANUAL_TOKEN) {
-  console.error("⚠️ ADVERTENCIA: No se encontró MANUAL_TOKEN. Las cargas fallarán.");
+  console.error("⚠️ ADVERTENCIA: No se encontró MANUAL_TOKEN. Si falla login, no habrá token de respaldo.");
 } else {
   console.log("✅ Token Manual detectado.");
 }
@@ -59,8 +67,8 @@ const auth = GOOGLE_CREDENTIALS
     })
   : null;
 
-const messageBuffer = new Map(); 
-const userStates = new Map(); 
+const messageBuffer = new Map();
+const userStates = new Map();
 
 // Limpieza de memoria
 setInterval(() => {
@@ -73,16 +81,16 @@ setInterval(() => {
 // ================== CLIENTE HTTP (Token Manual + Soporte Proxy) ==================
 
 function toFormUrlEncoded(data) {
-    return Object.keys(data).map(key => {
-        return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
-    }).join('&');
+  return Object.keys(data).map(key => {
+    return encodeURIComponent(key) + '=' + encodeURIComponent(data[key]);
+  }).join('&');
 }
 
 // Configuración del agente (Proxy o Directo)
 let httpsAgent = null;
 if (PROXY_URL) {
-    console.log("🌐 Usando Proxy configurado.");
-    httpsAgent = new HttpsProxyAgent(PROXY_URL);
+  console.log("🌐 Usando Proxy configurado.");
+  httpsAgent = new HttpsProxyAgent(PROXY_URL);
 }
 
 // ✅ Log de IP pública usando el proxy (si existe)
@@ -110,129 +118,215 @@ function logBlockedHtml(context, html) {
 
 // Configuración idéntica a tu navegador para evitar bloqueos
 const client = axios.create({
-    baseURL: API_URL,
-    timeout: 20000, 
-    httpsAgent: httpsAgent, // Inyectamos el proxy si existe
-    proxy: false, // IMPORTANTE: evita que Axios interfiera con el httpsAgent
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Origin': 'https://admin.agentesadmin.bet',
-        'Referer': 'https://admin.agentesadmin.bet/users',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        // Headers adicionales para engañar a Cloudflare
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Accept-Language': 'es-419,es;q=0.9'
-    }
+  baseURL: API_URL,
+  timeout: 20000,
+  httpsAgent: httpsAgent, // Inyectamos el proxy si existe
+  proxy: false, // IMPORTANTE: evita que Axios interfiera con el httpsAgent
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Origin': 'https://admin.agentesadmin.bet',
+    'Referer': 'https://admin.agentesadmin.bet/users',
+    'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    // Headers adicionales para engañar a Cloudflare
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Accept-Language': 'es-419,es;q=0.9'
+  }
 });
+
+// ================== LOGIN AUTOMÁTICO ==================
+let SESSION_COOKIE = null;
+let SESSION_TOKEN = null;
+let SESSION_PARENT_ID = null;
+let SESSION_LAST_LOGIN = 0;
+const SESSION_TTL_MS = 10 * 60 * 1000; // 10 min
+
+async function loginAndCacheSession() {
+  if (!PLATFORM_USER || !PLATFORM_PASS) {
+    console.error("❌ No hay PLATFORM_USER/PLATFORM_PASS para login automático.");
+    return false;
+  }
+
+  console.log("🔐 Iniciando login automático...");
+  try {
+    const body = toFormUrlEncoded({
+      action: 'LOGIN',
+      username: PLATFORM_USER,
+      password: PLATFORM_PASS
+    });
+
+    const resp = await client.post('', body, {
+      validateStatus: () => true,
+      maxRedirects: 0
+    });
+
+    if (resp.headers['set-cookie']) {
+      SESSION_COOKIE = resp.headers['set-cookie']
+        .map(c => c.split(';')[0])
+        .join('; ');
+    }
+
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try {
+        data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1));
+      } catch (e) {}
+    }
+
+    if (!data?.token) {
+      console.error("❌ Login falló: no se recibió token.");
+      return false;
+    }
+
+    SESSION_TOKEN = data.token;
+    SESSION_PARENT_ID = data.user ? data.user.user_id : null;
+    SESSION_LAST_LOGIN = Date.now();
+
+    console.log(`✅ Login OK. Token: ...${SESSION_TOKEN.substr(-5)}`);
+    console.log(`✅ ParentID detectado: ${SESSION_PARENT_ID}`);
+
+    return true;
+  } catch (err) {
+    console.error("❌ Error login automático:", err.message);
+    return false;
+  }
+}
+
+function isSessionValid() {
+  if (!SESSION_TOKEN || !SESSION_PARENT_ID) return false;
+  return (Date.now() - SESSION_LAST_LOGIN) < SESSION_TTL_MS;
+}
+
+async function ensureSession() {
+  if (isSessionValid()) return true;
+
+  const ok = await loginAndCacheSession();
+  if (!ok && MANUAL_TOKEN) {
+    console.warn("⚠️ Usando MANUAL_TOKEN como fallback.");
+    SESSION_TOKEN = MANUAL_TOKEN;
+    SESSION_PARENT_ID = null; // con manual no tenemos parentid
+    return true;
+  }
+  return ok;
+}
 
 // 1. BUSCAR USUARIO
 async function getUserIdByName(targetUsername) {
-    console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
-    
-    if (!MANUAL_TOKEN) {
-        console.error("❌ Error: Token Manual no configurado.");
-        return null;
+  console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
+
+  const hasSession = await ensureSession();
+  if (!hasSession) {
+    console.error("❌ Error: no hay sesión válida (ni token manual).");
+    return null;
+  }
+
+  try {
+    const body = toFormUrlEncoded({
+      action: 'ShowUsers',
+      token: SESSION_TOKEN,
+      page: 1,
+      pagesize: 50,
+      viewtype: 'tree',
+      username: targetUsername,
+      showhidden: 'false',
+      ...(SESSION_PARENT_ID ? { parentid: SESSION_PARENT_ID } : {})
+    });
+
+    const headers = {};
+    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
+
+    const resp = await client.post('', body, {
+      validateStatus: () => true,
+      maxRedirects: 0,
+      headers
+    });
+
+    console.log("🔎 [DEBUG] status:", resp.status);
+    console.log("🔎 [DEBUG] location:", resp.headers?.location);
+    console.log("🔎 [DEBUG] content-type:", resp.headers?.['content-type']);
+    console.log("🔎 [DEBUG] finalUrl:", resp.request?.res?.responseUrl);
+
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
     }
 
-    try {
-        const body = toFormUrlEncoded({
-            action: 'ShowUsers',
-            token: MANUAL_TOKEN,
-            page: 1,
-            pagesize: 50,
-            viewtype: 'tree',
-            username: targetUsername,
-            showhidden: 'false'
-        });
-
-        const resp = await client.post('', body, {
-          validateStatus: () => true,
-          maxRedirects: 0
-        });
-
-        console.log("🔎 [DEBUG] status:", resp.status);
-        console.log("🔎 [DEBUG] location:", resp.headers?.location);
-        console.log("🔎 [DEBUG] content-type:", resp.headers?.['content-type']);
-        console.log("🔎 [DEBUG] finalUrl:", resp.request?.res?.responseUrl);
-        
-        let data = resp.data;
-        if (typeof data === 'string') {
-             try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
-        }
-
-        // Detección de bloqueo HTML
-        if (typeof data === 'string' && data.trim().startsWith('<')) {
-            logBlockedHtml('ShowUsers', data);
-            return null;
-        }
-
-        const list = data.users || data.data || (Array.isArray(data) ? data : []);
-        const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
-
-        if (found && found.user_id) {
-            console.log(`✅ [API] ID encontrado: ${found.user_id}`);
-            return found.user_id;
-        }
-        
-        console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
-        return null;
-    } catch (err) {
-        console.error("❌ [API] Error Búsqueda:", err.message);
-        return null;
+    // Detección de bloqueo HTML
+    if (typeof data === 'string' && data.trim().startsWith('<')) {
+      logBlockedHtml('ShowUsers', data);
+      return null;
     }
+
+    const list = data.users || data.data || (Array.isArray(data) ? data : []);
+    const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
+
+    if (found && found.user_id) {
+      console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+      return found.user_id;
+    }
+
+    console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
+    return null;
+  } catch (err) {
+    console.error("❌ [API] Error Búsqueda:", err.message);
+    return null;
+  }
 }
 
 // 2. DEPOSITAR
 async function creditUserBalance(username, amount) {
-    console.log(`💰 [API] Cargando $${amount} a ${username}`);
-    
-    if (!MANUAL_TOKEN) return { success: false, error: 'Falta Token en Render' };
+  console.log(`💰 [API] Cargando $${amount} a ${username}`);
 
-    const childId = await getUserIdByName(username);
-    if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
+  const hasSession = await ensureSession();
+  if (!hasSession) return { success: false, error: 'No hay sesión ni token manual' };
 
-    try {
-        const amountCents = Math.round(parseFloat(amount) * 100);
-        
-        const body = toFormUrlEncoded({
-            action: 'DepositMoney',
-            token: MANUAL_TOKEN,
-            childid: childId,
-            amount: amountCents,
-            currency: PLATFORM_CURRENCY
-        });
+  const childId = await getUserIdByName(username);
+  if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
 
-        const resp = await client.post('', body);
+  try {
+    const amountCents = Math.round(parseFloat(amount) * 100);
 
-        let data = resp.data;
-        if (typeof data === 'string') {
-             try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
-        }
+    const body = toFormUrlEncoded({
+      action: 'DepositMoney',
+      token: SESSION_TOKEN,
+      childid: childId,
+      amount: amountCents,
+      currency: PLATFORM_CURRENCY
+    });
 
-        // Detección de bloqueo HTML
-        if (typeof data === 'string' && data.trim().startsWith('<')) {
-            logBlockedHtml('DepositMoney', data);
-            return { success: false, error: 'IP Bloqueada (HTML)' };
-        }
+    const headers = {};
+    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
 
-        console.log("📩 [API] Resultado:", JSON.stringify(data));
+    const resp = await client.post('', body, { headers });
 
-        if (data && data.success) {
-            return { success: true };
-        } else {
-            return { success: false, error: data.error || 'API Error' };
-        }
-    } catch (err) {
-        return { success: false, error: err.message };
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
     }
+
+    // Detección de bloqueo HTML
+    if (typeof data === 'string' && data.trim().startsWith('<')) {
+      logBlockedHtml('DepositMoney', data);
+      return { success: false, error: 'IP Bloqueada (HTML)' };
+    }
+
+    console.log("📩 [API] Resultado:", JSON.stringify(data));
+
+    if (data && data.success) {
+      return { success: true };
+    } else {
+      return { success: false, error: data.error || 'API Error' };
+    }
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 }
 
 // ================== GOOGLE SHEETS ==================
@@ -254,7 +348,7 @@ async function checkUserInSheets(username) {
   const lookupKey = username.toLowerCase().trim();
   const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
   const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
-  
+
   const foundIndices = [];
   let userTotals = { deposits: 0, withdrawals: 0 };
 
@@ -286,13 +380,13 @@ async function checkUserInSheets(username) {
   const net = userTotals.deposits - userTotals.withdrawals;
   if (net <= 1) return { status: 'no_balance', net: net.toFixed(2), username, indices: foundIndices };
 
-  return { 
-    status: 'success', 
-    net: net.toFixed(2), 
-    bonus: (net * 0.08).toFixed(2), 
-    username, 
+  return {
+    status: 'success',
+    net: net.toFixed(2),
+    bonus: (net * 0.08).toFixed(2),
+    username,
     indices: foundIndices,
-    spreadsheetId 
+    spreadsheetId
   };
 }
 
@@ -301,7 +395,7 @@ async function markAllUserRowsAsClaimed(spreadsheetId, indices, columnLetter = '
     const authClient = await auth.getClient();
     const sheets = google.sheets({ version: 'v4', auth: authClient });
     const promises = indices.map(rowIndex => {
-      const sheetRow = rowIndex + 2; 
+      const sheetRow = rowIndex + 2;
       return sheets.spreadsheets.values.update({
         spreadsheetId,
         range: `Sheet1!${columnLetter}${sheetRow}`,
@@ -363,7 +457,7 @@ async function generateCheckResult(username, status, data = {}) {
   else if (status === 'not_found') systemPrompt += ` Usuario no encontrado en nuestros registros.`;
   else if (status === 'claimed') systemPrompt += ` Ya reclamó hoy.`;
   else if (status === 'no_balance') systemPrompt += ` Sin saldo negativo para reintegro.`;
-  
+
   try {
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
@@ -402,7 +496,7 @@ const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._
 function isValidUsername(text) {
   if (!text) return false;
   if (TEAM_USER_PATTERN.test(text)) return true;
-  if (/[a-z]+\d{3,}$/i.test(text)) return true; 
+  if (/[a-z]+\d{3,}$/i.test(text)) return true;
   return false;
 }
 
@@ -426,7 +520,7 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   let state = userStates.get(conversationId) || { claimed: false, username: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
-  
+
   let activeUsername = state.username;
   if (!activeUsername && isValidUsername(contactName)) {
     activeUsername = contactName.toLowerCase();
@@ -444,7 +538,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (activeUsername) {
     console.log(`⚡ Usuario conocido: ${activeUsername}`);
     const result = await checkUserInSheets(activeUsername);
-    
+
     if (result.status === 'success') {
       const apiResult = await creditUserBalance(activeUsername, result.bonus);
       if (apiResult.success) {
@@ -474,22 +568,22 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (extractedUser) {
     console.log(`⚡ Usuario detectado: ${extractedUser}`);
     const result = await checkUserInSheets(extractedUser);
-    
+
     if (result.status === 'success') {
-       const apiResult = await creditUserBalance(extractedUser, result.bonus);
-       if (apiResult.success) {
-          const reply = await generateCheckResult(extractedUser, 'success', result);
-          await sendReplyToChatwoot(accountId, conversationId, reply);
-          await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
-          await updateChatwootContact(accountId, contactId, extractedUser);
-          state.claimed = true;
-          state.username = extractedUser;
-          userStates.set(conversationId, state);
-       } else {
-          console.error(`❌ FALLO API: ${apiResult.error}`);
-          const reply = await generateCheckResult(extractedUser, 'api_error', result);
-          await sendReplyToChatwoot(accountId, conversationId, reply);
-       }
+      const apiResult = await creditUserBalance(extractedUser, result.bonus);
+      if (apiResult.success) {
+        const reply = await generateCheckResult(extractedUser, 'success', result);
+        await sendReplyToChatwoot(accountId, conversationId, reply);
+        await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
+        await updateChatwootContact(accountId, contactId, extractedUser);
+        state.claimed = true;
+        state.username = extractedUser;
+        userStates.set(conversationId, state);
+      } else {
+        console.error(`❌ FALLO API: ${apiResult.error}`);
+        const reply = await generateCheckResult(extractedUser, 'api_error', result);
+        await sendReplyToChatwoot(accountId, conversationId, reply);
+      }
     } else {
       const reply = await generateCheckResult(extractedUser, result.status, result);
       await sendReplyToChatwoot(accountId, conversationId, reply);
@@ -515,7 +609,7 @@ app.post('/webhook-chatwoot', (req, res) => {
   const conversationId = body.conversation?.id;
   const accountId = body.account?.id;
   const contactId = body.sender?.id;
-  const contactName = body.sender?.name || ''; 
+  const contactName = body.sender?.name || '';
   const content = cleanHtml(body.content);
 
   if (!conversationId || !content) return;
@@ -534,7 +628,7 @@ app.post('/webhook-chatwoot', (req, res) => {
     messageBuffer.delete(conversationId);
     (async () => {
       console.log(`⏳ Procesando... (Conv ${conversationId})`);
-      await sleep(3500); 
+      await sleep(3500);
       await processConversation(accountId, conversationId, contactId, contactName, fullText);
     })();
   }, 3000);
