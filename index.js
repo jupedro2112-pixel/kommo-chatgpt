@@ -4,7 +4,7 @@ const axios = require('axios');
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
-const { HttpsProxyAgent } = require('https-proxy-agent'); // Soporte para Proxy futuro
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,23 +21,16 @@ const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 const API_URL = "https://admin.agentesadmin.bet/api/admin/";
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
 
-// Credenciales login automático
-const PLATFORM_USER = process.env.PLATFORM_USER;
-const PLATFORM_PASS = process.env.PLATFORM_PASS;
+// ✅ TOKEN FIJO
+const FIXED_API_TOKEN = process.env.FIXED_API_TOKEN;
 
-// Token Manual desde Render (fallback opcional)
-const MANUAL_TOKEN = process.env.MANUAL_TOKEN;
-// Opcional: Si consigues un proxy, lo pones en esta variable en Render
+// Opcional: Proxy
 const PROXY_URL = process.env.PROXY_URL;
 
-if (!PLATFORM_USER || !PLATFORM_PASS) {
-  console.error("⚠️ ADVERTENCIA: Falta PLATFORM_USER o PLATFORM_PASS. Se usará MANUAL_TOKEN si existe.");
-}
-
-if (!MANUAL_TOKEN) {
-  console.error("⚠️ ADVERTENCIA: No se encontró MANUAL_TOKEN. Si falla login, no habrá token de respaldo.");
+if (!FIXED_API_TOKEN) {
+  console.error("❌ FALTA FIXED_API_TOKEN. La API no funcionará.");
 } else {
-  console.log("✅ Token Manual detectado.");
+  console.log("✅ FIXED_API_TOKEN detectado.");
 }
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
@@ -46,12 +39,9 @@ let GOOGLE_CREDENTIALS = null;
 if (GOOGLE_CREDENTIALS_JSON) {
   try {
     GOOGLE_CREDENTIALS = JSON.parse(GOOGLE_CREDENTIALS_JSON);
-
-    // ✅ Reparar private_key si viene con \\n
     if (GOOGLE_CREDENTIALS.private_key) {
       GOOGLE_CREDENTIALS.private_key = GOOGLE_CREDENTIALS.private_key.replace(/\\n/g, '\n');
     }
-
     console.log(`✅ Google credentials cargadas: ${GOOGLE_CREDENTIALS.client_email}`);
   } catch (err) {
     console.error('❌ Error Credentials JSON:', err.message);
@@ -70,7 +60,7 @@ const auth = GOOGLE_CREDENTIALS
 const messageBuffer = new Map();
 const userStates = new Map();
 
-// Limpieza de memoria
+// Limpieza memoria
 setInterval(() => {
   const now = Date.now();
   for (const [id, state] of userStates.entries()) {
@@ -78,7 +68,7 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-// ================== CLIENTE HTTP (Token Manual + Soporte Proxy) ==================
+// ================== CLIENTE HTTP ==================
 
 function toFormUrlEncoded(data) {
   return Object.keys(data).map(key => {
@@ -86,14 +76,12 @@ function toFormUrlEncoded(data) {
   }).join('&');
 }
 
-// Configuración del agente (Proxy o Directo)
 let httpsAgent = null;
 if (PROXY_URL) {
   console.log("🌐 Usando Proxy configurado.");
   httpsAgent = new HttpsProxyAgent(PROXY_URL);
 }
 
-// ✅ Log de IP pública usando el proxy (si existe)
 async function logProxyIP() {
   try {
     const res = await axios.get('https://api.ipify.org?format=json', {
@@ -106,22 +94,18 @@ async function logProxyIP() {
   }
 }
 
-if (httpsAgent) {
-  logProxyIP();
-}
+if (httpsAgent) logProxyIP();
 
-// Helper: log HTML completo cuando hay bloqueo
 function logBlockedHtml(context, html) {
   console.error(`❌ [API] RESPUESTA HTML (BLOQUEO DE IP) en ${context}. HTML completo:`);
   console.error(html);
 }
 
-// Configuración idéntica a tu navegador para evitar bloqueos
 const client = axios.create({
   baseURL: API_URL,
   timeout: 20000,
-  httpsAgent: httpsAgent, // Inyectamos el proxy si existe
-  proxy: false, // IMPORTANTE: evita que Axios interfiera con el httpsAgent
+  httpsAgent: httpsAgent,
+  proxy: false,
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
@@ -134,98 +118,27 @@ const client = axios.create({
     'Sec-Fetch-Dest': 'empty',
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'same-origin',
-    // Headers adicionales para engañar a Cloudflare
     'Cache-Control': 'no-cache',
     'Pragma': 'no-cache',
     'Accept-Language': 'es-419,es;q=0.9'
   }
 });
 
-// ================== LOGIN AUTOMÁTICO ==================
-let SESSION_COOKIE = null;
-let SESSION_TOKEN = null;
-let SESSION_PARENT_ID = null;
-let SESSION_LAST_LOGIN = 0;
-const SESSION_TTL_MS = 10 * 60 * 1000; // 10 min
-
-async function loginAndCacheSession() {
-  if (!PLATFORM_USER || !PLATFORM_PASS) {
-    console.error("❌ No hay PLATFORM_USER/PLATFORM_PASS para login automático.");
-    return false;
-  }
-
-  console.log("🔐 Iniciando login automático...");
-  try {
-    const body = toFormUrlEncoded({
-      action: 'LOGIN',
-      username: PLATFORM_USER,
-      password: PLATFORM_PASS
-    });
-
-    const resp = await client.post('', body, {
-      validateStatus: () => true,
-      maxRedirects: 0
-    });
-
-    if (resp.headers['set-cookie']) {
-      SESSION_COOKIE = resp.headers['set-cookie']
-        .map(c => c.split(';')[0])
-        .join('; ');
-    }
-
-    let data = resp.data;
-    if (typeof data === 'string') {
-      try {
-        data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1));
-      } catch (e) {}
-    }
-
-    if (!data?.token) {
-      console.error("❌ Login falló: no se recibió token.");
-      return false;
-    }
-
-    SESSION_TOKEN = data.token;
-    SESSION_PARENT_ID = data.user ? data.user.user_id : null;
-    SESSION_LAST_LOGIN = Date.now();
-
-    console.log(`✅ Login OK. Token: ...${SESSION_TOKEN.substr(-5)}`);
-    console.log(`✅ ParentID detectado: ${SESSION_PARENT_ID}`);
-
-    return true;
-  } catch (err) {
-    console.error("❌ Error login automático:", err.message);
-    return false;
-  }
-}
-
-function isSessionValid() {
-  if (!SESSION_TOKEN || !SESSION_PARENT_ID) return false;
-  return (Date.now() - SESSION_LAST_LOGIN) < SESSION_TTL_MS;
-}
+// ================== SESIÓN (TOKEN FIJO) ==================
+let SESSION_TOKEN = FIXED_API_TOKEN || null;
 
 async function ensureSession() {
-  if (isSessionValid()) return true;
-
-  const ok = await loginAndCacheSession();
-  if (!ok && MANUAL_TOKEN) {
-    console.warn("⚠️ Usando MANUAL_TOKEN como fallback.");
-    SESSION_TOKEN = MANUAL_TOKEN;
-    SESSION_PARENT_ID = null; // con manual no tenemos parentid
-    return true;
-  }
-  return ok;
+  if (SESSION_TOKEN) return true;
+  console.error("❌ No hay FIXED_API_TOKEN configurado.");
+  return false;
 }
 
 // 1. BUSCAR USUARIO
 async function getUserIdByName(targetUsername) {
   console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
 
-  const hasSession = await ensureSession();
-  if (!hasSession) {
-    console.error("❌ Error: no hay sesión válida (ni token manual).");
-    return null;
-  }
+  const ok = await ensureSession();
+  if (!ok) return null;
 
   try {
     const body = toFormUrlEncoded({
@@ -235,30 +148,22 @@ async function getUserIdByName(targetUsername) {
       pagesize: 50,
       viewtype: 'tree',
       username: targetUsername,
-      showhidden: 'false',
-      ...(SESSION_PARENT_ID ? { parentid: SESSION_PARENT_ID } : {})
+      showhidden: 'false'
     });
-
-    const headers = {};
-    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
 
     const resp = await client.post('', body, {
       validateStatus: () => true,
-      maxRedirects: 0,
-      headers
+      maxRedirects: 0
     });
 
     console.log("🔎 [DEBUG] status:", resp.status);
-    console.log("🔎 [DEBUG] location:", resp.headers?.location);
     console.log("🔎 [DEBUG] content-type:", resp.headers?.['content-type']);
-    console.log("🔎 [DEBUG] finalUrl:", resp.request?.res?.responseUrl);
 
     let data = resp.data;
     if (typeof data === 'string') {
       try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
     }
 
-    // Detección de bloqueo HTML
     if (typeof data === 'string' && data.trim().startsWith('<')) {
       logBlockedHtml('ShowUsers', data);
       return null;
@@ -284,8 +189,8 @@ async function getUserIdByName(targetUsername) {
 async function creditUserBalance(username, amount) {
   console.log(`💰 [API] Cargando $${amount} a ${username}`);
 
-  const hasSession = await ensureSession();
-  if (!hasSession) return { success: false, error: 'No hay sesión ni token manual' };
+  const ok = await ensureSession();
+  if (!ok) return { success: false, error: 'No hay FIXED_API_TOKEN' };
 
   const childId = await getUserIdByName(username);
   if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
@@ -301,17 +206,13 @@ async function creditUserBalance(username, amount) {
       currency: PLATFORM_CURRENCY
     });
 
-    const headers = {};
-    if (SESSION_COOKIE) headers['Cookie'] = SESSION_COOKIE;
-
-    const resp = await client.post('', body, { headers });
+    const resp = await client.post('', body);
 
     let data = resp.data;
     if (typeof data === 'string') {
       try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
     }
 
-    // Detección de bloqueo HTML
     if (typeof data === 'string' && data.trim().startsWith('<')) {
       logBlockedHtml('DepositMoney', data);
       return { success: false, error: 'IP Bloqueada (HTML)' };
@@ -343,7 +244,6 @@ async function getSheetData(spreadsheetId, range) {
   }
 }
 
-// FUNCIÓN QUE FALTABA (CÁLCULO DE SALDO)
 async function checkUserInSheets(username) {
   const lookupKey = username.toLowerCase().trim();
   const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
@@ -442,7 +342,7 @@ async function generateCasualChat(message) {
       model: 'gpt-4o-mini',
       temperature: 0.4,
       messages: [
-        { role: 'system', content: `Sos un agente de casino virtual. Textos resumidos.` },
+        { role: 'system', content: `Sos un agente de casino virtual. Breve.` },
         { role: 'user', content: message },
       ],
     });
@@ -483,7 +383,6 @@ async function generateAfterCare(message, username) {
 }
 
 // ================== UTILIDADES ==================
-// FUNCIÓN QUE FALTABA (cleanHtml)
 function cleanHtml(html) {
   if (!html) return "";
   return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
@@ -534,7 +433,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  // USUARIO CONOCIDO
   if (activeUsername) {
     console.log(`⚡ Usuario conocido: ${activeUsername}`);
     const result = await checkUserInSheets(activeUsername);
@@ -634,4 +532,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot (Completo y Sin Errores) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot (Token Fijo) Activo en puerto ${PORT}`));
