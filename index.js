@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const { google } = require('googleapis');
+const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
@@ -17,6 +19,10 @@ const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot
 
 const API_URL = "https://admin.agentesadmin.bet/api/admin/";
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
+
+const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
+const SHEET_ID = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
+const SHEET_NAME = 'Sheet1';
 
 // Credenciales para login automático
 const PLATFORM_USER = process.env.PLATFORM_USER;
@@ -36,6 +42,28 @@ if (!PLATFORM_USER || !PLATFORM_PASS) {
 }
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
+
+let GOOGLE_CREDENTIALS = null;
+if (GOOGLE_CREDENTIALS_JSON) {
+  try {
+    GOOGLE_CREDENTIALS = JSON.parse(GOOGLE_CREDENTIALS_JSON);
+    if (GOOGLE_CREDENTIALS.private_key) {
+      GOOGLE_CREDENTIALS.private_key = GOOGLE_CREDENTIALS.private_key.replace(/\\n/g, '\n');
+    }
+    console.log(`✅ Google credentials cargadas: ${GOOGLE_CREDENTIALS.client_email}`);
+  } catch (err) {
+    console.error('❌ Error Credentials JSON:', err.message);
+  }
+} else {
+  console.error('❌ GOOGLE_CREDENTIALS_JSON no está definido.');
+}
+
+const auth = GOOGLE_CREDENTIALS
+  ? new GoogleAuth({
+      credentials: GOOGLE_CREDENTIALS,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    })
+  : null;
 
 const messageBuffer = new Map();
 const userStates = new Map();
@@ -210,120 +238,71 @@ function getYesterdayRangeArgentinaEpoch() {
   };
 }
 
-// ================== TRANSFERENCIAS (AYER) ==================
-async function getUserNetYesterday(username) {
-  const ok = await ensureSession();
-  if (!ok) return { success: false, error: 'No hay sesión válida' };
+function getTodayRangeArgentinaEpoch() {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
 
-  if (!SESSION_PARENT_ID) {
-    return { success: false, error: 'No se pudo obtener Admin ID' };
-  }
+  const now = new Date();
+  const parts = formatter.formatToParts(now);
+  const yyyy = parts.find(p => p.type === 'year').value;
+  const mm = parts.find(p => p.type === 'month').value;
+  const dd = parts.find(p => p.type === 'day').value;
 
+  const from = new Date(`${yyyy}-${mm}-${dd}T00:00:00-03:00`);
+  const to = new Date(`${yyyy}-${mm}-${dd}T23:59:59-03:00`);
+
+  return {
+    fromEpoch: Math.floor(from.getTime() / 1000),
+    toEpoch: Math.floor(to.getTime() / 1000),
+  };
+}
+
+function getArgentinaDateTime() {
+  return new Intl.DateTimeFormat('es-AR', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(new Date());
+}
+
+// ================== GOOGLE SHEETS ==================
+async function appendBonusToSheet(username, amount) {
   try {
-    const { fromEpoch, toEpoch } = getYesterdayRangeArgentinaEpoch();
+    if (!auth) throw new Error('GoogleAuth no inicializado');
+    const authClient = await auth.getClient();
+    const sheets = google.sheets({ version: 'v4', auth: authClient });
 
-    const body = toFormUrlEncoded({
-      action: 'ShowUserTransfersByAgent',
-      token: SESSION_TOKEN,
-      page: 1,
-      pagesize: 30,
-      fromtime: fromEpoch,
-      totime: toEpoch,
-      username: username,
-      userrole: 'player',
-      direct: 'False',
-      childid: SESSION_PARENT_ID
+    const row = [
+      'bonus',
+      username,
+      amount,
+      getArgentinaDateTime()
+    ];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${SHEET_NAME}!A:D`,
+      valueInputOption: 'RAW',
+      insertDataOption: 'INSERT_ROWS',
+      resource: { values: [row] }
     });
 
-    const headers2 = {};
-    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
-
-    const resp = await client.post('', body, { headers: headers2 });
-
-    let data = resp.data;
-    if (typeof data === 'string') {
-      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
-    }
-
-    if (typeof data === 'string' && data.trim().startsWith('<')) {
-      logBlockedHtml('ShowUserTransfersByAgent', data);
-      return { success: false, error: 'IP Bloqueada (HTML)' };
-    }
-
-    // ⬇️ La API devuelve en CENTAVOS
-    const totalDepositsCents = Number(data?.total_deposits || 0);
-    const totalWithdrawsCents = Number(data?.total_withdraws || 0);
-    const netCents = totalDepositsCents - totalWithdrawsCents;
-
-    // ✅ Convertir a PESOS
-    const totalDeposits = totalDepositsCents / 100;
-    const totalWithdraws = totalWithdrawsCents / 100;
-    const net = netCents / 100;
-
-    console.log(`📊 Totales ${username}: deposits=${totalDeposits} withdraws=${totalWithdraws} net=${net}`);
-
-    return {
-      success: true,
-      net: Number(net.toFixed(2)),
-      totalDeposits,
-      totalWithdraws,
-      fromEpoch,
-      toEpoch
-    };
+    console.log('✅ Bonus registrado en Google Sheets');
   } catch (err) {
-    return { success: false, error: err.message };
+    console.error('❌ Error guardando en Sheets:', err.message);
   }
 }
 
-// ================== DEPOSITAR BONUS ==================
-async function creditUserBalance(username, amount) {
-  console.log(`💰 [API] Cargando $${amount} a ${username}`);
-
-  const ok = await ensureSession();
-  if (!ok) return { success: false, error: 'No hay sesión válida' };
-
-  try {
-    // ✅ DepositMoney espera PESOS, no centavos
-    const amountPesos = Math.round(parseFloat(amount));
-
-    const body = toFormUrlEncoded({
-      action: 'DepositMoney',
-      token: SESSION_TOKEN,
-      childid: (await getUserIdByName(username)) || undefined,
-      amount: amountPesos,
-      currency: PLATFORM_CURRENCY,
-      deposit_type: 'individual_bonus'
-    });
-
-    const headers2 = {};
-    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
-
-    const resp = await client.post('', body, { headers: headers2 });
-
-    let data = resp.data;
-    if (typeof data === 'string') {
-      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
-    }
-
-    if (typeof data === 'string' && data.trim().startsWith('<')) {
-      logBlockedHtml('DepositMoney', data);
-      return { success: false, error: 'IP Bloqueada (HTML)' };
-    }
-
-    console.log("📩 [API] Resultado:", JSON.stringify(data));
-
-    if (data && data.success) {
-      return { success: true };
-    } else {
-      return { success: false, error: data.error || 'API Error' };
-    }
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-}
-
-// ================== BUSCAR USUARIO (para DepositMoney) ==================
-async function getUserIdByName(targetUsername) {
+// ================== USUARIO ==================
+async function getUserInfoByName(targetUsername) {
   console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
 
   const ok = await ensureSession();
@@ -364,8 +343,14 @@ async function getUserIdByName(targetUsername) {
     const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
 
     if (found && found.user_id) {
-      console.log(`✅ [API] ID encontrado: ${found.user_id}`);
-      return found.user_id;
+      let balanceRaw = found.user_balance ?? found.balance ?? found.balance_amount ?? found.available_balance ?? 0;
+      balanceRaw = Number(balanceRaw || 0);
+
+      let balancePesos = balanceRaw;
+      if (balanceRaw > 10000) balancePesos = balanceRaw / 100;
+
+      console.log(`✅ [API] ID encontrado: ${found.user_id} | Balance: ${balancePesos}`);
+      return { id: found.user_id, balance: balancePesos };
     }
 
     console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
@@ -373,6 +358,162 @@ async function getUserIdByName(targetUsername) {
   } catch (err) {
     console.error("❌ [API] Error Búsqueda:", err.message);
     return null;
+  }
+}
+
+// ================== TRANSFERENCIAS (AYER) ==================
+async function getUserNetYesterday(username) {
+  const ok = await ensureSession();
+  if (!ok) return { success: false, error: 'No hay sesión válida' };
+
+  if (!SESSION_PARENT_ID) {
+    return { success: false, error: 'No se pudo obtener Admin ID' };
+  }
+
+  try {
+    const { fromEpoch, toEpoch } = getYesterdayRangeArgentinaEpoch();
+
+    const body = toFormUrlEncoded({
+      action: 'ShowUserTransfersByAgent',
+      token: SESSION_TOKEN,
+      page: 1,
+      pagesize: 30,
+      fromtime: fromEpoch,
+      totime: toEpoch,
+      username: username,
+      userrole: 'player',
+      direct: 'False',
+      childid: SESSION_PARENT_ID
+    });
+
+    const headers2 = {};
+    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+
+    const resp = await client.post('', body, { headers: headers2 });
+
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
+    }
+
+    if (typeof data === 'string' && data.trim().startsWith('<')) {
+      logBlockedHtml('ShowUserTransfersByAgent', data);
+      return { success: false, error: 'IP Bloqueada (HTML)' };
+    }
+
+    const totalDepositsCents = Number(data?.total_deposits || 0);
+    const totalWithdrawsCents = Number(data?.total_withdraws || 0);
+    const netCents = totalDepositsCents - totalWithdrawsCents;
+
+    const totalDeposits = totalDepositsCents / 100;
+    const totalWithdraws = totalWithdrawsCents / 100;
+    const net = netCents / 100;
+
+    console.log(`📊 Totales ${username}: deposits=${totalDeposits} withdraws=${totalWithdraws} net=${net}`);
+
+    return {
+      success: true,
+      net: Number(net.toFixed(2)),
+      totalDeposits,
+      totalWithdraws,
+      fromEpoch,
+      toEpoch
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ================== RECLAMO HOY ==================
+async function checkClaimedToday(username) {
+  const ok = await ensureSession();
+  if (!ok) return { success: false, error: 'No hay sesión válida' };
+
+  if (!SESSION_PARENT_ID) {
+    return { success: false, error: 'No se pudo obtener Admin ID' };
+  }
+
+  try {
+    const { fromEpoch, toEpoch } = getTodayRangeArgentinaEpoch();
+
+    const body = toFormUrlEncoded({
+      action: 'ShowUserTransfersByAgent',
+      token: SESSION_TOKEN,
+      page: 1,
+      pagesize: 30,
+      fromtime: fromEpoch,
+      totime: toEpoch,
+      username: username,
+      userrole: 'player',
+      direct: 'False',
+      childid: SESSION_PARENT_ID
+    });
+
+    const headers2 = {};
+    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+
+    const resp = await client.post('', body, { headers: headers2 });
+
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
+    }
+
+    const totalBonusCents = Number(data?.total_bonus || 0);
+    const totalBonus = totalBonusCents / 100;
+
+    return { success: true, claimed: totalBonus > 0, totalBonus };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ================== DEPOSITAR BONUS ==================
+async function creditUserBalance(username, amount) {
+  console.log(`💰 [API] Cargando $${amount} a ${username}`);
+
+  const ok = await ensureSession();
+  if (!ok) return { success: false, error: 'No hay sesión válida' };
+
+  const userInfo = await getUserInfoByName(username);
+  if (!userInfo) return { success: false, error: 'Usuario no encontrado' };
+
+  try {
+    const amountPesos = Math.round(parseFloat(amount));
+
+    const body = toFormUrlEncoded({
+      action: 'DepositMoney',
+      token: SESSION_TOKEN,
+      childid: userInfo.id,
+      amount: amountPesos,
+      currency: PLATFORM_CURRENCY,
+      deposit_type: 'individual_bonus'
+    });
+
+    const headers2 = {};
+    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+
+    const resp = await client.post('', body, { headers: headers2 });
+
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
+    }
+
+    if (typeof data === 'string' && data.trim().startsWith('<')) {
+      logBlockedHtml('DepositMoney', data);
+      return { success: false, error: 'IP Bloqueada (HTML)' };
+    }
+
+    console.log("📩 [API] Resultado:", JSON.stringify(data));
+
+    if (data && data.success) {
+      return { success: true };
+    } else {
+      return { success: false, error: data.error || 'API Error' };
+    }
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 }
 
@@ -407,19 +548,20 @@ async function generateCasualChat(message) {
       model: 'gpt-4o-mini',
       temperature: 0.4,
       messages: [
-        { role: 'system', content: `Sos un agente de casino virtual. Breve.` },
+        { role: 'system', content: `Sos Camila de Jugá y Ganá (Argentina). Mensajes cortos, claros, profesionales. Nunca decir que sos IA.` },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'Hola, indicame tu usuario.'; }
+  } catch (err) { return 'Hola, soy Camila. Pasame tu usuario para revisar el reintegro.'; }
 }
 
 async function generateCheckResult(username, status, data = {}) {
-  let systemPrompt = `Sos agente de casino. Usuario: "${username}". Breve.`;
-  if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}.`;
-  else if (status === 'api_error') systemPrompt += ` Hubo un error técnico.`;
-  else if (status === 'no_balance') systemPrompt += ` Sin saldo suficiente para reintegro.`;
+  let systemPrompt = `Sos Camila de Jugá y Ganá. Usuario: "${username}". Breve y profesional.`;
+  if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}. Decir que puede verlo en la plataforma.`;
+  else if (status === 'api_error') systemPrompt += ` Error técnico.`;
+  else if (status === 'no_balance') systemPrompt += ` No cumple condiciones.`;
+  else if (status === 'claimed') systemPrompt += ` Ya fue reclamado hoy.`;
 
   try {
     const resp = await openai.createChatCompletion({
@@ -428,7 +570,7 @@ async function generateCheckResult(username, status, data = {}) {
       messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: "Generá respuesta." }],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return status === 'success' ? `Listo. $${data.bonus}.` : 'Error.'; }
+  } catch (err) { return status === 'success' ? `Listo, ya lo tenés acreditado.` : 'No se puede procesar.'; }
 }
 
 async function generateAfterCare(message, username) {
@@ -437,12 +579,12 @@ async function generateAfterCare(message, username) {
       model: 'gpt-4o-mini',
       temperature: 0.5,
       messages: [
-        { role: 'system', content: `Agente de casino. Cliente "${username}" ya cobró hoy.` },
+        { role: 'system', content: `Sos Camila. El cliente "${username}" ya cobró hoy. Mensaje corto.` },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'Tu reintegro ya está listo.'; }
+  } catch (err) { return 'El reintegro ya fue acreditado hoy. Podés volver mañana.'; }
 }
 
 // ================== UTILIDADES ==================
@@ -476,19 +618,50 @@ function extractUsername(message) {
   return null;
 }
 
+function isWrongUsernameMessage(message) {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes('no es mi usuario') ||
+    m.includes('ese no es mi usuario') ||
+    m.includes('me equivoque') ||
+    m.includes('me equivoqué') ||
+    m.includes('usuario incorrecto') ||
+    m.includes('usuario mal') ||
+    m.includes('no es mi user')
+  );
+}
+
+function randomTempName() {
+  return `temp-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 // ================== PROCESAMIENTO ==================
 async function processConversation(accountId, conversationId, contactId, contactName, fullMessage) {
   console.log(`🤖 Msg: "${fullMessage}" | Contact: "${contactName}"`);
 
   let state = userStates.get(conversationId) || { claimed: false, username: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
+  userStates.set(conversationId, state);
+
+  if (isWrongUsernameMessage(fullMessage)) {
+    state.username = null;
+    state.claimed = false;
+    userStates.set(conversationId, state);
+
+    const tempName = randomTempName();
+    await updateChatwootContact(accountId, contactId, tempName);
+
+    await sendReplyToChatwoot(accountId, conversationId, 'Entiendo, pasame tu usuario correcto para acreditarte el reintegro.');
+    return;
+  }
 
   let activeUsername = state.username;
   if (!activeUsername && isValidUsername(contactName)) {
     activeUsername = contactName.toLowerCase();
     state.username = activeUsername;
+    userStates.set(conversationId, state);
   }
-  userStates.set(conversationId, state);
 
   if (state.claimed && activeUsername) {
     const reply = await generateAfterCare(fullMessage, activeUsername);
@@ -496,76 +669,69 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  if (activeUsername) {
-    console.log(`⚡ Usuario conocido: ${activeUsername}`);
-    const result = await getUserNetYesterday(activeUsername);
+  const usernameToCheck = activeUsername || extractUsername(fullMessage);
+  if (usernameToCheck) {
+    console.log(`⚡ Usuario detectado: ${usernameToCheck}`);
 
+    // 1) Ya reclamado hoy
+    const claimedCheck = await checkClaimedToday(usernameToCheck);
+    if (claimedCheck.success && claimedCheck.claimed) {
+      const reply = await generateCheckResult(usernameToCheck, 'claimed');
+      await sendReplyToChatwoot(accountId, conversationId, reply);
+      state.claimed = true;
+      state.username = usernameToCheck;
+      userStates.set(conversationId, state);
+      return;
+    }
+
+    // 2) Saldo actual
+    const userInfo = await getUserInfoByName(usernameToCheck);
+    if (!userInfo) {
+      const reply = await generateCheckResult(usernameToCheck, 'api_error');
+      await sendReplyToChatwoot(accountId, conversationId, reply);
+      return;
+    }
+
+    if (userInfo.balance >= 1000) {
+      await sendReplyToChatwoot(accountId, conversationId, 'Tu saldo actual supera $1000, por eso no aplica el reintegro automático.');
+      return;
+    }
+
+    // 3) Neto de ayer
+    const result = await getUserNetYesterday(usernameToCheck);
     if (result.success) {
       const net = result.net;
       if (net > 1) {
         const bonus = Number((net * 0.08).toFixed(2));
-        const apiResult = await creditUserBalance(activeUsername, bonus);
+        const apiResult = await creditUserBalance(usernameToCheck, bonus);
         if (apiResult.success) {
-          const reply = await generateCheckResult(activeUsername, 'success', { bonus });
+          await appendBonusToSheet(usernameToCheck, bonus);
+          const reply = await generateCheckResult(usernameToCheck, 'success', { bonus });
           await sendReplyToChatwoot(accountId, conversationId, reply);
-          await updateChatwootContact(accountId, contactId, activeUsername);
+          await updateChatwootContact(accountId, contactId, usernameToCheck);
           state.claimed = true;
+          state.username = usernameToCheck;
           userStates.set(conversationId, state);
         } else {
-          console.error(`❌ FALLO API: ${apiResult.error}`);
-          const reply = await generateCheckResult(activeUsername, 'api_error');
+          const reply = await generateCheckResult(usernameToCheck, 'api_error');
           await sendReplyToChatwoot(accountId, conversationId, reply);
         }
       } else {
-        const reply = await generateCheckResult(activeUsername, 'no_balance', { net });
+        const reply = await generateCheckResult(usernameToCheck, 'no_balance', { net });
         await sendReplyToChatwoot(accountId, conversationId, reply);
         state.claimed = true;
+        state.username = usernameToCheck;
         userStates.set(conversationId, state);
       }
     } else {
-      const reply = await generateCheckResult(activeUsername, 'api_error');
+      const reply = await generateCheckResult(usernameToCheck, 'api_error');
       await sendReplyToChatwoot(accountId, conversationId, reply);
     }
     return;
   }
 
-  const extractedUser = extractUsername(fullMessage);
-  if (extractedUser) {
-    console.log(`⚡ Usuario detectado: ${extractedUser}`);
-    const result = await getUserNetYesterday(extractedUser);
-
-    if (result.success) {
-      const net = result.net;
-      if (net > 1) {
-        const bonus = Number((net * 0.08).toFixed(2));
-        const apiResult = await creditUserBalance(extractedUser, bonus);
-        if (apiResult.success) {
-          const reply = await generateCheckResult(extractedUser, 'success', { bonus });
-          await sendReplyToChatwoot(accountId, conversationId, reply);
-          await updateChatwootContact(accountId, contactId, extractedUser);
-          state.claimed = true;
-          state.username = extractedUser;
-          userStates.set(conversationId, state);
-        } else {
-          console.error(`❌ FALLO API: ${apiResult.error}`);
-          const reply = await generateCheckResult(extractedUser, 'api_error');
-          await sendReplyToChatwoot(accountId, conversationId, reply);
-        }
-      } else {
-        const reply = await generateCheckResult(extractedUser, 'no_balance', { net });
-        await sendReplyToChatwoot(accountId, conversationId, reply);
-        state.claimed = true;
-        state.username = extractedUser;
-        userStates.set(conversationId, state);
-      }
-    } else {
-      const reply = await generateCheckResult(extractedUser, 'api_error');
-      await sendReplyToChatwoot(accountId, conversationId, reply);
-    }
-  } else {
-    const reply = await generateCasualChat(fullMessage);
-    await sendReplyToChatwoot(accountId, conversationId, reply);
-  }
+  const reply = await generateCasualChat(fullMessage);
+  await sendReplyToChatwoot(accountId, conversationId, reply);
 }
 
 // ================== WEBHOOK ==================
