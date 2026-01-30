@@ -1,8 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const { google } = require('googleapis');
-const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
@@ -16,7 +14,6 @@ app.use(express.urlencoded({ extended: true }));
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CHATWOOT_ACCESS_TOKEN = process.env.CHATWOOT_ACCESS_TOKEN;
 const CHATWOOT_BASE_URL = process.env.CHATWOOT_BASE_URL || 'https://app.chatwoot.com';
-const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 
 const API_URL = "https://admin.agentesadmin.bet/api/admin/";
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
@@ -39,28 +36,6 @@ if (!PLATFORM_USER || !PLATFORM_PASS) {
 }
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
-
-let GOOGLE_CREDENTIALS = null;
-if (GOOGLE_CREDENTIALS_JSON) {
-  try {
-    GOOGLE_CREDENTIALS = JSON.parse(GOOGLE_CREDENTIALS_JSON);
-    if (GOOGLE_CREDENTIALS.private_key) {
-      GOOGLE_CREDENTIALS.private_key = GOOGLE_CREDENTIALS.private_key.replace(/\\n/g, '\n');
-    }
-    console.log(`✅ Google credentials cargadas: ${GOOGLE_CREDENTIALS.client_email}`);
-  } catch (err) {
-    console.error('❌ Error Credentials JSON:', err.message);
-  }
-} else {
-  console.error('❌ GOOGLE_CREDENTIALS_JSON no está definido.');
-}
-
-const auth = GOOGLE_CREDENTIALS
-  ? new GoogleAuth({
-      credentials: GOOGLE_CREDENTIALS,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    })
-  : null;
 
 const messageBuffer = new Map();
 const userStates = new Map();
@@ -262,6 +237,89 @@ async function getUserIdByName(targetUsername) {
   }
 }
 
+// ================== FECHAS ARGENTINA ==================
+function getYesterdayRangeArgentina() {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+
+  const now = new Date();
+  const parts = formatter.formatToParts(now);
+  const yyyy = parts.find(p => p.type === 'year').value;
+  const mm = parts.find(p => p.type === 'month').value;
+  const dd = parts.find(p => p.type === 'day').value;
+
+  const todayLocal = new Date(`${yyyy}-${mm}-${dd}T00:00:00-03:00`);
+  const yesterdayLocal = new Date(todayLocal.getTime() - 24 * 60 * 60 * 1000);
+
+  const yparts = formatter.formatToParts(yesterdayLocal);
+  const y = yparts.find(p => p.type === 'year').value;
+  const m = yparts.find(p => p.type === 'month').value;
+  const d = yparts.find(p => p.type === 'day').value;
+
+  const from = `${y}-${m}-${d} 00:00:00`;
+  const to = `${y}-${m}-${d} 23:59:59`;
+
+  return { from, to };
+}
+
+// ================== TRANSFERENCIAS (AYER) ==================
+async function getUserNetYesterday(username) {
+  const ok = await ensureSession();
+  if (!ok) return { success: false, error: 'No hay sesión válida' };
+
+  const childId = await getUserIdByName(username);
+  if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
+
+  try {
+    const { from, to } = getYesterdayRangeArgentina();
+    const body = toFormUrlEncoded({
+      action: 'ShowUserTransfersByAgent',
+      token: SESSION_TOKEN,
+      childid: childId,
+      fromtime: from,
+      totime: to,
+      viewtype: 'tree'
+    });
+
+    const headers2 = {};
+    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+
+    const resp = await client.post('', body, { headers: headers2 });
+
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
+    }
+
+    if (typeof data === 'string' && data.trim().startsWith('<')) {
+      logBlockedHtml('ShowUserTransfersByAgent', data);
+      return { success: false, error: 'IP Bloqueada (HTML)' };
+    }
+
+    const totalDeposits = parseFloat(data?.total_deposits || 0);
+    const totalWithdraws = parseFloat(data?.total_withdraws || 0);
+    const totalIndividualBonus = parseFloat(data?.total_individual_bonus || 0);
+
+    const net = totalDeposits - totalWithdraws;
+
+    return {
+      success: true,
+      net: Number(net.toFixed(2)),
+      totalDeposits,
+      totalWithdraws,
+      totalIndividualBonus,
+      from,
+      to
+    };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 // 2. DEPOSITAR
 async function creditUserBalance(username, amount) {
   console.log(`💰 [API] Cargando $${amount} a ${username}`);
@@ -280,7 +338,8 @@ async function creditUserBalance(username, amount) {
       token: SESSION_TOKEN,
       childid: childId,
       amount: amountCents,
-      currency: PLATFORM_CURRENCY
+      currency: PLATFORM_CURRENCY,
+      deposit_type: 'individual_bonus'
     });
 
     const headers2 = {};
@@ -307,87 +366,6 @@ async function creditUserBalance(username, amount) {
     }
   } catch (err) {
     return { success: false, error: err.message };
-  }
-}
-
-// ================== GOOGLE SHEETS ==================
-async function getSheetData(spreadsheetId, range) {
-  try {
-    if (!auth) throw new Error('GoogleAuth no inicializado (credenciales inválidas)');
-    const authClient = await auth.getClient();
-    const sheets = google.sheets({ version: 'v4', auth: authClient });
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    return res.data.values || [];
-  } catch (error) {
-    console.error('❌ Error Sheets:', error?.message);
-    return [];
-  }
-}
-
-async function checkUserInSheets(username) {
-  const lookupKey = username.toLowerCase().trim();
-  const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
-  const rows = await getSheetData(spreadsheetId, 'Sheet1!A2:E10000');
-
-  const foundIndices = [];
-  let userTotals = { deposits: 0, withdrawals: 0 };
-
-  for (let i = 0; i < rows.length; i++) {
-    const rowUser = String(rows[i][1] || '').toLowerCase().trim();
-    if (rowUser === lookupKey) {
-      foundIndices.push(i);
-      const type = String(rows[i][0] || '').toLowerCase();
-      const amount = parseFloat(String(rows[i][2] || '0').replace(/[^0-9.-]/g, '')) || 0;
-      if (type.includes('deposit') || type.includes('depósito') || type.includes('carga')) {
-        userTotals.deposits += amount;
-      } else if (type.includes('withdraw') || type.includes('retiro') || type.includes('retir')) {
-        userTotals.withdrawals += amount;
-      }
-    }
-  }
-
-  if (foundIndices.length === 0) return { status: 'not_found' };
-
-  let alreadyClaimed = false;
-  for (const idx of foundIndices) {
-    if (String(rows[idx][4] || '').toLowerCase().includes('reclam')) {
-      alreadyClaimed = true;
-      break;
-    }
-  }
-  if (alreadyClaimed) return { status: 'claimed', username };
-
-  const net = userTotals.deposits - userTotals.withdrawals;
-  if (net <= 1) return { status: 'no_balance', net: net.toFixed(2), username, indices: foundIndices };
-
-  return {
-    status: 'success',
-    net: net.toFixed(2),
-    bonus: (net * 0.08).toFixed(2),
-    username,
-    indices: foundIndices,
-    spreadsheetId
-  };
-}
-
-async function markAllUserRowsAsClaimed(spreadsheetId, indices, columnLetter = 'E') {
-  try {
-    const authClient = await auth.getClient();
-    const sheets = google.sheets({ version: 'v4', auth: authClient });
-    const promises = indices.map(rowIndex => {
-      const sheetRow = rowIndex + 2;
-      return sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `Sheet1!${columnLetter}${sheetRow}`,
-        valueInputOption: 'RAW',
-        resource: { values: [['RECLAMADO']] },
-      });
-    });
-    await Promise.all(promises);
-    return true;
-  } catch (err) {
-    console.error('❌ Error marcando reclamado:', err?.message);
-    return false;
   }
 }
 
@@ -515,29 +493,33 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (activeUsername) {
     console.log(`⚡ Usuario conocido: ${activeUsername}`);
-    const result = await checkUserInSheets(activeUsername);
+    const result = await getUserNetYesterday(activeUsername);
 
-    if (result.status === 'success') {
-      const apiResult = await creditUserBalance(activeUsername, result.bonus);
-      if (apiResult.success) {
-        const reply = await generateCheckResult(activeUsername, 'success', result);
+    if (result.success) {
+      const net = result.net;
+      if (net > 1) {
+        const bonus = Number((net * 0.08).toFixed(2));
+        const apiResult = await creditUserBalance(activeUsername, bonus);
+        if (apiResult.success) {
+          const reply = await generateCheckResult(activeUsername, 'success', { bonus });
+          await sendReplyToChatwoot(accountId, conversationId, reply);
+          await updateChatwootContact(accountId, contactId, activeUsername);
+          state.claimed = true;
+          userStates.set(conversationId, state);
+        } else {
+          console.error(`❌ FALLO API: ${apiResult.error}`);
+          const reply = await generateCheckResult(activeUsername, 'api_error');
+          await sendReplyToChatwoot(accountId, conversationId, reply);
+        }
+      } else {
+        const reply = await generateCheckResult(activeUsername, 'no_balance', { net });
         await sendReplyToChatwoot(accountId, conversationId, reply);
-        await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
-        await updateChatwootContact(accountId, contactId, activeUsername);
         state.claimed = true;
         userStates.set(conversationId, state);
-      } else {
-        console.error(`❌ FALLO API: ${apiResult.error}`);
-        const reply = await generateCheckResult(activeUsername, 'api_error', result);
-        await sendReplyToChatwoot(accountId, conversationId, reply);
       }
     } else {
-      const reply = await generateCheckResult(activeUsername, result.status, result);
+      const reply = await generateCheckResult(activeUsername, 'api_error');
       await sendReplyToChatwoot(accountId, conversationId, reply);
-      if (result.status === 'claimed' || result.status === 'no_balance') {
-        state.claimed = true;
-        userStates.set(conversationId, state);
-      }
     }
     return;
   }
@@ -545,31 +527,35 @@ async function processConversation(accountId, conversationId, contactId, contact
   const extractedUser = extractUsername(fullMessage);
   if (extractedUser) {
     console.log(`⚡ Usuario detectado: ${extractedUser}`);
-    const result = await checkUserInSheets(extractedUser);
+    const result = await getUserNetYesterday(extractedUser);
 
-    if (result.status === 'success') {
-      const apiResult = await creditUserBalance(extractedUser, result.bonus);
-      if (apiResult.success) {
-        const reply = await generateCheckResult(extractedUser, 'success', result);
+    if (result.success) {
+      const net = result.net;
+      if (net > 1) {
+        const bonus = Number((net * 0.08).toFixed(2));
+        const apiResult = await creditUserBalance(extractedUser, bonus);
+        if (apiResult.success) {
+          const reply = await generateCheckResult(extractedUser, 'success', { bonus });
+          await sendReplyToChatwoot(accountId, conversationId, reply);
+          await updateChatwootContact(accountId, contactId, extractedUser);
+          state.claimed = true;
+          state.username = extractedUser;
+          userStates.set(conversationId, state);
+        } else {
+          console.error(`❌ FALLO API: ${apiResult.error}`);
+          const reply = await generateCheckResult(extractedUser, 'api_error');
+          await sendReplyToChatwoot(accountId, conversationId, reply);
+        }
+      } else {
+        const reply = await generateCheckResult(extractedUser, 'no_balance', { net });
         await sendReplyToChatwoot(accountId, conversationId, reply);
-        await markAllUserRowsAsClaimed(result.spreadsheetId, result.indices);
-        await updateChatwootContact(accountId, contactId, extractedUser);
         state.claimed = true;
         state.username = extractedUser;
         userStates.set(conversationId, state);
-      } else {
-        console.error(`❌ FALLO API: ${apiResult.error}`);
-        const reply = await generateCheckResult(extractedUser, 'api_error', result);
-        await sendReplyToChatwoot(accountId, conversationId, reply);
       }
     } else {
-      const reply = await generateCheckResult(extractedUser, result.status, result);
+      const reply = await generateCheckResult(extractedUser, 'api_error');
       await sendReplyToChatwoot(accountId, conversationId, reply);
-      if (result.status === 'claimed' || result.status === 'no_balance') {
-        state.claimed = true;
-        state.username = extractedUser;
-        userStates.set(conversationId, state);
-      }
     }
   } else {
     const reply = await generateCasualChat(fullMessage);
