@@ -153,7 +153,15 @@ async function getUserIdByName(targetUsername) {
             showhidden: 'false'
         });
 
-        const resp = await client.post('', body);
+        const resp = await client.post('', body, {
+          validateStatus: () => true,
+          maxRedirects: 0
+        });
+
+        console.log("🔎 [DEBUG] status:", resp.status);
+        console.log("🔎 [DEBUG] location:", resp.headers?.location);
+        console.log("🔎 [DEBUG] content-type:", resp.headers?.['content-type']);
+        console.log("🔎 [DEBUG] finalUrl:", resp.request?.res?.responseUrl);
         
         let data = resp.data;
         if (typeof data === 'string') {
