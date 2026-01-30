@@ -20,13 +20,13 @@ const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 const API_URL = "https://admin.agentesadmin.bet/api/admin/"; 
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
 
-// AHORA USAMOS TOKEN MANUAL, NO COOKIE
+// Token Manual desde Render
 const MANUAL_TOKEN = process.env.MANUAL_TOKEN; 
 
 if (!MANUAL_TOKEN) {
-  console.error("❌ ERROR: Falta MANUAL_TOKEN en Render (Sácalo de la pestaña Payload).");
+  console.error("⚠️ ADVERTENCIA: No se encontró MANUAL_TOKEN. Las cargas fallarán.");
 } else {
-  console.log("✅ Token Manual cargado.");
+  console.log("✅ Token Manual detectado.");
 }
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
@@ -45,6 +45,7 @@ const auth = new GoogleAuth({
 const messageBuffer = new Map(); 
 const userStates = new Map(); 
 
+// Limpieza de memoria
 setInterval(() => {
   const now = Date.now();
   for (const [id, state] of userStates.entries()) {
@@ -52,27 +53,7 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-// ================== CLIENTE HTTP (CLON DE TU CHROME) ==================
-
-// Usamos las cabeceras EXACTAS que me pasaste
-const client = axios.create({
-    baseURL: API_URL,
-    timeout: 15000, 
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', // Usamos una versión estable
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'es-419,es;q=0.9',
-        'Origin': 'https://admin.agentesadmin.bet',
-        'Referer': 'https://admin.agentesadmin.bet/users', // Referer específico
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'Content-Type': 'application/x-www-form-urlencoded' // Forzamos esto
-    }
-});
+// ================== CLIENTE HTTP (Token Manual) ==================
 
 function toFormUrlEncoded(data) {
     return Object.keys(data).map(key => {
@@ -80,17 +61,38 @@ function toFormUrlEncoded(data) {
     }).join('&');
 }
 
+// Configuración idéntica a tu navegador para evitar bloqueos
+const client = axios.create({
+    baseURL: API_URL,
+    timeout: 20000, // 20 segundos de espera
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://admin.agentesadmin.bet',
+        'Referer': 'https://admin.agentesadmin.bet/users',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin'
+    }
+});
+
 // 1. BUSCAR USUARIO
 async function getUserIdByName(targetUsername) {
-    console.log(`🔎 [API] Buscando: ${targetUsername}...`);
+    console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
     
-    if (!MANUAL_TOKEN) return null;
+    if (!MANUAL_TOKEN) {
+        console.error("❌ Error: Token Manual no configurado.");
+        return null;
+    }
 
     try {
-        // Reproducimos exactamente el payload que viste en Chrome
         const body = toFormUrlEncoded({
             action: 'ShowUsers',
-            token: MANUAL_TOKEN, // <--- AQUÍ VA EL TOKEN MANUAL
+            token: MANUAL_TOKEN,
             page: 1,
             pagesize: 50,
             viewtype: 'tree',
@@ -105,8 +107,9 @@ async function getUserIdByName(targetUsername) {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
         }
 
+        // Detección de bloqueo HTML
         if (typeof data === 'string' && data.trim().startsWith('<')) {
-            console.error("❌ [API] BLOQUEO WAF (HTML). El servidor rechaza la IP de Render.");
+            console.error("❌ [API] RESPUESTA HTML (BLOQUEO). El Token o la IP fueron rechazados.");
             return null;
         }
 
@@ -118,7 +121,7 @@ async function getUserIdByName(targetUsername) {
             return found.user_id;
         }
         
-        console.error(`❌ [API] Usuario no encontrado. Lista: ${list.length}`);
+        console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
         return null;
     } catch (err) {
         console.error("❌ [API] Error Búsqueda:", err.message);
@@ -130,17 +133,17 @@ async function getUserIdByName(targetUsername) {
 async function creditUserBalance(username, amount) {
     console.log(`💰 [API] Cargando $${amount} a ${username}`);
     
-    if (!MANUAL_TOKEN) return { success: false, error: 'Falta Token Manual' };
+    if (!MANUAL_TOKEN) return { success: false, error: 'Falta Token en Render' };
 
     const childId = await getUserIdByName(username);
-    if (!childId) return { success: false, error: 'Usuario no encontrado o Token vencido' };
+    if (!childId) return { success: false, error: 'Usuario no encontrado o Token inválido' };
 
     try {
         const amountCents = Math.round(parseFloat(amount) * 100);
         
         const body = toFormUrlEncoded({
             action: 'DepositMoney',
-            token: MANUAL_TOKEN, // <--- AQUÍ VA EL TOKEN MANUAL
+            token: MANUAL_TOKEN,
             childid: childId,
             amount: amountCents,
             currency: PLATFORM_CURRENCY
@@ -178,6 +181,7 @@ async function getSheetData(spreadsheetId, range) {
   }
 }
 
+// ESTA ES LA FUNCIÓN DE CÁLCULO (NO BORRAR)
 async function checkUserInSheets(username) {
   const lookupKey = username.toLowerCase().trim();
   const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
@@ -245,7 +249,7 @@ async function markAllUserRowsAsClaimed(spreadsheetId, indices, columnLetter = '
   }
 }
 
-// ================== CHATWOOT & IA ==================
+// ================== CHATWOOT ==================
 async function sendReplyToChatwoot(accountId, conversationId, message) {
   if (!CHATWOOT_ACCESS_TOKEN) return;
   try {
@@ -269,27 +273,26 @@ async function updateChatwootContact(accountId, contactId, username) {
   } catch (err) { console.error('❌ Error Rename:', err?.message); }
 }
 
+// ================== GENERADORES IA ==================
 async function generateCasualChat(message) {
   try {
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.4,
       messages: [
-        { role: 'system', content: `Agente de casino. Breve.` },
+        { role: 'system', content: `Sos un agente de casino virtual. Breve.` },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'Hola, por favor indicame tu usuario.'; }
+  } catch (err) { return 'Hola, indicame tu usuario.'; }
 }
 
 async function generateCheckResult(username, status, data = {}) {
-  let systemPrompt = `Sos agente de casino. Usuario: "${username}". Sé breve.`;
-  if (status === 'success') systemPrompt += ` ÉXITO. Reintegro: ${data.bonus}.`;
-  else if (status === 'api_error') systemPrompt += ` Error técnico.`;
+  let systemPrompt = `Sos agente de casino. Usuario: "${username}". Breve.`;
+  if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}.`;
+  else if (status === 'api_error') systemPrompt += ` Hubo un error técnico.`;
   else if (status === 'not_found') systemPrompt += ` Usuario no encontrado.`;
-  else if (status === 'claimed') systemPrompt += ` Ya reclamó hoy.`;
-  else if (status === 'no_balance') systemPrompt += ` Sin saldo negativo.`;
   
   try {
     const resp = await openai.createChatCompletion({
@@ -298,7 +301,7 @@ async function generateCheckResult(username, status, data = {}) {
       messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: "Generá respuesta." }],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return status === 'success' ? `Listo. Acreditados $${data.bonus}.` : 'Error.'; }
+  } catch (err) { return status === 'success' ? `Listo. $${data.bonus}.` : 'Error.'; }
 }
 
 async function generateAfterCare(message, username) {
@@ -349,6 +352,7 @@ async function processConversation(accountId, conversationId, contactId, contact
         state.claimed = true;
         userStates.set(conversationId, state);
       } else {
+        console.error(`❌ FALLO API: ${apiResult.error}`);
         const reply = await generateCheckResult(activeUsername, 'api_error', result);
         await sendReplyToChatwoot(accountId, conversationId, reply);
       }
@@ -379,6 +383,7 @@ async function processConversation(accountId, conversationId, contactId, contact
           state.username = extractedUser;
           userStates.set(conversationId, state);
        } else {
+          console.error(`❌ FALLO API: ${apiResult.error}`);
           const reply = await generateCheckResult(extractedUser, 'api_error', result);
           await sendReplyToChatwoot(accountId, conversationId, reply);
        }
@@ -395,6 +400,36 @@ async function processConversation(accountId, conversationId, contactId, contact
     const reply = await generateCasualChat(fullMessage);
     await sendReplyToChatwoot(accountId, conversationId, reply);
   }
+}
+
+// ================== UTILIDADES ==================
+function cleanHtml(html) {
+  if (!html) return "";
+  return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+}
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
+
+function isValidUsername(text) {
+  if (!text) return false;
+  if (TEAM_USER_PATTERN.test(text)) return true;
+  if (/[a-z]+\d{3,}$/i.test(text)) return true; 
+  return false;
+}
+
+function extractUsername(message) {
+  if (!message) return null;
+  const m = message.trim();
+  const teamMatch = m.match(TEAM_USER_PATTERN);
+  if (teamMatch) return teamMatch[0].toLowerCase();
+  const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
+  if (explicit) return explicit[1].toLowerCase();
+  const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso','bono','buenas','tardes','noches','tengo','plata','carga']);
+  const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 4 && !STOPWORDS.has(t.toLowerCase()));
+  const withNumbers = tokens.find(t => /\d/.test(t));
+  if (withNumbers) return withNumbers.toLowerCase();
+  return null;
 }
 
 // ================== WEBHOOK ==================
@@ -432,4 +467,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot (Token Manual) activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot (Token Manual) Activo en puerto ${PORT}`));
