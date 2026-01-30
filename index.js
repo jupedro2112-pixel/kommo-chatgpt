@@ -21,16 +21,21 @@ const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 const API_URL = "https://admin.agentesadmin.bet/api/admin/";
 const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
 
-// ✅ TOKEN FIJO
+// Credenciales para login automático
+const PLATFORM_USER = process.env.PLATFORM_USER;
+const PLATFORM_PASS = process.env.PLATFORM_PASS;
+
+// Fallback opcional (solo si no hay user/pass)
 const FIXED_API_TOKEN = process.env.FIXED_API_TOKEN;
 
-// Opcional: Proxy
+// TTL de token en minutos
+const TOKEN_TTL_MINUTES = parseInt(process.env.TOKEN_TTL_MINUTES || '20', 10);
+
+// Proxy
 const PROXY_URL = process.env.PROXY_URL;
 
-if (!FIXED_API_TOKEN) {
-  console.error("❌ FALTA FIXED_API_TOKEN. La API no funcionará.");
-} else {
-  console.log("✅ FIXED_API_TOKEN detectado.");
+if (!PLATFORM_USER || !PLATFORM_PASS) {
+  console.log("⚠️ PLATFORM_USER / PLATFORM_PASS no definidos. Se usará FIXED_API_TOKEN si existe.");
 }
 
 const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
@@ -124,12 +129,79 @@ const client = axios.create({
   }
 });
 
-// ================== SESIÓN (TOKEN FIJO) ==================
-let SESSION_TOKEN = FIXED_API_TOKEN || null;
+// ================== SESIÓN (TOKEN FRESCO) ==================
+let SESSION_TOKEN = null;
+let SESSION_COOKIE = null;
+let SESSION_PARENT_ID = null;
+let SESSION_LAST_LOGIN = 0;
+
+async function loginAndGetToken() {
+  if (!PLATFORM_USER || !PLATFORM_PASS) {
+    console.error("❌ Falta PLATFORM_USER/PLATFORM_PASS.");
+    return false;
+  }
+
+  console.log("🔐 Iniciando login automático...");
+  try {
+    const loginRes = await client.post('', toFormUrlEncoded({
+      action: 'LOGIN',
+      username: PLATFORM_USER,
+      password: PLATFORM_PASS
+    }), {
+      validateStatus: status => status >= 200 && status < 500,
+      maxRedirects: 0
+    });
+
+    if (loginRes.headers['set-cookie']) {
+      SESSION_COOKIE = loginRes.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+    }
+
+    let loginData = loginRes.data;
+    if (typeof loginData === 'string') {
+      try {
+        loginData = JSON.parse(loginData.substring(loginData.indexOf('{'), loginData.lastIndexOf('}') + 1));
+      } catch (e) {}
+    }
+
+    if (!loginData?.token) {
+      console.error("❌ Login falló: no se recibió token.");
+      return false;
+    }
+
+    SESSION_TOKEN = loginData.token;
+    SESSION_PARENT_ID = loginData.user ? loginData.user.user_id : null;
+    SESSION_LAST_LOGIN = Date.now();
+
+    console.log("✅ Login OK (token fresco).");
+    if (SESSION_PARENT_ID) console.log(`✅ Admin ID: ${SESSION_PARENT_ID}`);
+
+    return true;
+  } catch (err) {
+    console.error("❌ Error en login:", err.message);
+    return false;
+  }
+}
 
 async function ensureSession() {
-  if (SESSION_TOKEN) return true;
-  console.error("❌ No hay FIXED_API_TOKEN configurado.");
+  // Si hay user/pass -> token fresco con TTL
+  if (PLATFORM_USER && PLATFORM_PASS) {
+    const isExpired = Date.now() - SESSION_LAST_LOGIN > TOKEN_TTL_MINUTES * 60 * 1000;
+    if (!SESSION_TOKEN || isExpired) {
+      SESSION_TOKEN = null;
+      SESSION_COOKIE = null;
+      SESSION_PARENT_ID = null;
+      return await loginAndGetToken();
+    }
+    return true;
+  }
+
+  // Fallback token fijo
+  if (FIXED_API_TOKEN) {
+    SESSION_TOKEN = FIXED_API_TOKEN;
+    return true;
+  }
+
+  console.error("❌ No hay credenciales ni token fijo.");
   return false;
 }
 
@@ -148,10 +220,15 @@ async function getUserIdByName(targetUsername) {
       pagesize: 50,
       viewtype: 'tree',
       username: targetUsername,
-      showhidden: 'false'
+      showhidden: 'false',
+      parentid: SESSION_PARENT_ID || undefined
     });
 
+    const headers2 = {};
+    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+
     const resp = await client.post('', body, {
+      headers: headers2,
       validateStatus: () => true,
       maxRedirects: 0
     });
@@ -190,7 +267,7 @@ async function creditUserBalance(username, amount) {
   console.log(`💰 [API] Cargando $${amount} a ${username}`);
 
   const ok = await ensureSession();
-  if (!ok) return { success: false, error: 'No hay FIXED_API_TOKEN' };
+  if (!ok) return { success: false, error: 'No hay sesión válida' };
 
   const childId = await getUserIdByName(username);
   if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
@@ -206,7 +283,10 @@ async function creditUserBalance(username, amount) {
       currency: PLATFORM_CURRENCY
     });
 
-    const resp = await client.post('', body);
+    const headers2 = {};
+    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+
+    const resp = await client.post('', body, { headers: headers2 });
 
     let data = resp.data;
     if (typeof data === 'string') {
@@ -532,4 +612,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot (Token Fijo) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot (Token Fresco) Activo en puerto ${PORT}`));
