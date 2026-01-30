@@ -306,8 +306,9 @@ async function getUserNetYesterday(username) {
 
     const totalDeposits = Number(data?.total_deposits || 0);
     const totalWithdraws = Number(data?.total_withdraws || 0);
-
     const net = totalDeposits - totalWithdraws;
+
+    console.log(`📊 Totales ${username}: deposits=${totalDeposits} withdraws=${totalWithdraws} net=${net}`);
 
     return {
       success: true,
@@ -415,8 +416,7 @@ async function generateCheckResult(username, status, data = {}) {
   if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}.`;
   else if (status === 'api_error') systemPrompt += ` Hubo un error técnico.`;
   else if (status === 'not_found') systemPrompt += ` Usuario no encontrado en nuestros registros.`;
-  else if (status === 'claimed') systemPrompt += ` Ya reclamó hoy.`;
-  else if (status === 'no_balance') systemPrompt += ` Sin saldo negativo para reintegro.`;
+  else if (status === 'no_balance') systemPrompt += ` Sin saldo suficiente para reintegro.`;
 
   try {
     const resp = await openai.createChatCompletion({
