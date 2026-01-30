@@ -24,10 +24,7 @@ const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
 // Token Manual desde Render
 const MANUAL_TOKEN = process.env.MANUAL_TOKEN; 
 // Opcional: Si consigues un proxy, lo pones en esta variable en Render
-const PROXY_URLS = (process.env.PROXY_URLS || process.env.PROXY_URL || '')
-  .split(',')
-  .map(proxy => proxy.trim())
-  .filter(proxy => proxy.length > 0);
+const PROXY_URL = process.env.PROXY_URL; 
 
 if (!MANUAL_TOKEN) {
   console.error("⚠️ ADVERTENCIA: No se encontró MANUAL_TOKEN. Las cargas fallarán.");
@@ -45,7 +42,7 @@ if (GOOGLE_CREDENTIALS_JSON) {
 
 const auth = new GoogleAuth({
   credentials: GOOGLE_CREDENTIALS,
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  scopes: ['https://www.googleapis.com/auth.spreadsheets'],
 });
 
 const messageBuffer = new Map(); 
@@ -67,28 +64,11 @@ function toFormUrlEncoded(data) {
     }).join('&');
 }
 
-let proxyIndex = 0;
-const getNextProxy = () => {
-  if (PROXY_URLS.length === 0) return null;
-  const proxy = PROXY_URLS[proxyIndex];
-  proxyIndex = (proxyIndex + 1) % PROXY_URLS.length;
-  return proxy;
-};
-
-const getRandomUserAgent = () => {
-  const agents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/118.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 12_5_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0 Safari/601.7.8',
-  ];
-  return agents[Math.floor(Math.random() * agents.length)];
-};
-
 // Configuración del agente (Proxy o Directo)
 let httpsAgent = null;
-if (PROXY_URLS.length > 0) {
-    console.log(`🌐 Usando ${PROXY_URLS.length} Proxy(s) configurado(s).`);
-    httpsAgent = new HttpsProxyAgent(getNextProxy());
+if (PROXY_URL) {
+    console.log("🌐 Usando Proxy configurado.");
+    httpsAgent = new HttpsProxyAgent(PROXY_URL);
 }
 
 // Configuración idéntica a tu navegador para evitar bloqueos
@@ -97,7 +77,7 @@ const client = axios.create({
     timeout: 20000, 
     httpsAgent: httpsAgent, // Inyectamos el proxy si existe
     headers: {
-        'User-Agent': getRandomUserAgent(),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Content-Type': 'application/x-www-form-urlencoded',
         'Origin': 'https://admin.agentesadmin.bet',
@@ -115,14 +95,15 @@ const client = axios.create({
     }
 });
 
-client.interceptors.request.use((config) => {
-  const nextProxy = getNextProxy();
-  if (nextProxy) {
-    config.httpsAgent = new HttpsProxyAgent(nextProxy);
+// === TEST DE PROXY (TEMPORAL) ===
+(async () => {
+  try {
+    const ipcheck = await axios.get('https://api.ipify.org?format=json', { httpsAgent });
+    console.log("🌍 Proxy IP:", ipcheck.data);
+  } catch (err) {
+    console.error("❌ Error Proxy Test:", err.message);
   }
-  config.headers['User-Agent'] = getRandomUserAgent();
-  return config;
-});
+})();
 
 // 1. BUSCAR USUARIO
 async function getUserIdByName(targetUsername) {
