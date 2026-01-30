@@ -158,7 +158,6 @@ async function loginAndGetToken() {
 }
 
 async function ensureSession() {
-  // Si hay user/pass -> token fresco con TTL
   if (PLATFORM_USER && PLATFORM_PASS) {
     const isExpired = Date.now() - SESSION_LAST_LOGIN > TOKEN_TTL_MINUTES * 60 * 1000;
     if (!SESSION_TOKEN || isExpired) {
@@ -170,7 +169,6 @@ async function ensureSession() {
     return true;
   }
 
-  // Fallback token fijo
   if (FIXED_API_TOKEN) {
     SESSION_TOKEN = FIXED_API_TOKEN;
     return true;
@@ -180,7 +178,7 @@ async function ensureSession() {
   return false;
 }
 
-// 1. BUSCAR USUARIO
+// ================== USUARIO ==================
 async function getUserIdByName(targetUsername) {
   console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
 
@@ -238,7 +236,7 @@ async function getUserIdByName(targetUsername) {
 }
 
 // ================== FECHAS ARGENTINA ==================
-function getYesterdayRangeArgentina() {
+function getYesterdayRangeArgentinaEpoch() {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Argentina/Buenos_Aires',
     year: 'numeric',
@@ -260,10 +258,13 @@ function getYesterdayRangeArgentina() {
   const m = yparts.find(p => p.type === 'month').value;
   const d = yparts.find(p => p.type === 'day').value;
 
-  const from = `${y}-${m}-${d} 00:00:00`;
-  const to = `${y}-${m}-${d} 23:59:59`;
+  const from = new Date(`${y}-${m}-${d}T00:00:00-03:00`);
+  const to = new Date(`${y}-${m}-${d}T23:59:59-03:00`);
 
-  return { from, to };
+  return {
+    fromEpoch: Math.floor(from.getTime() / 1000),
+    toEpoch: Math.floor(to.getTime() / 1000),
+  };
 }
 
 // ================== TRANSFERENCIAS (AYER) ==================
@@ -275,14 +276,17 @@ async function getUserNetYesterday(username) {
   if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
 
   try {
-    const { from, to } = getYesterdayRangeArgentina();
+    const { fromEpoch, toEpoch } = getYesterdayRangeArgentinaEpoch();
+
     const body = toFormUrlEncoded({
       action: 'ShowUserTransfersByAgent',
       token: SESSION_TOKEN,
-      childid: childId,
-      fromtime: from,
-      totime: to,
-      viewtype: 'tree'
+      page: 1,
+      pagesize: 30,
+      fromtime: fromEpoch,
+      totime: toEpoch,
+      userrole: 'player',
+      childid: childId
     });
 
     const headers2 = {};
@@ -300,9 +304,8 @@ async function getUserNetYesterday(username) {
       return { success: false, error: 'IP Bloqueada (HTML)' };
     }
 
-    const totalDeposits = parseFloat(data?.total_deposits || 0);
-    const totalWithdraws = parseFloat(data?.total_withdraws || 0);
-    const totalIndividualBonus = parseFloat(data?.total_individual_bonus || 0);
+    const totalDeposits = Number(data?.total_deposits || 0);
+    const totalWithdraws = Number(data?.total_withdraws || 0);
 
     const net = totalDeposits - totalWithdraws;
 
@@ -311,16 +314,15 @@ async function getUserNetYesterday(username) {
       net: Number(net.toFixed(2)),
       totalDeposits,
       totalWithdraws,
-      totalIndividualBonus,
-      from,
-      to
+      fromEpoch,
+      toEpoch
     };
   } catch (err) {
     return { success: false, error: err.message };
   }
 }
 
-// 2. DEPOSITAR
+// ================== DEPOSITAR BONUS ==================
 async function creditUserBalance(username, amount) {
   console.log(`💰 [API] Cargando $${amount} a ${username}`);
 
