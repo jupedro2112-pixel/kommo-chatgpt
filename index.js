@@ -102,12 +102,18 @@ if (httpsAgent) {
   logProxyIP();
 }
 
+// Helper: log HTML completo cuando hay bloqueo
+function logBlockedHtml(context, html) {
+  console.error(`❌ [API] RESPUESTA HTML (BLOQUEO DE IP) en ${context}. HTML completo:`);
+  console.error(html);
+}
+
 // Configuración idéntica a tu navegador para evitar bloqueos
 const client = axios.create({
     baseURL: API_URL,
     timeout: 20000, 
     httpsAgent: httpsAgent, // Inyectamos el proxy si existe
-  proxy: false, // ← IMPORTANTE
+    proxy: false, // IMPORTANTE: evita que Axios interfiera con el httpsAgent
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -156,7 +162,7 @@ async function getUserIdByName(targetUsername) {
 
         // Detección de bloqueo HTML
         if (typeof data === 'string' && data.trim().startsWith('<')) {
-            console.error("❌ [API] RESPUESTA HTML (BLOQUEO DE IP).");
+            logBlockedHtml('ShowUsers', data);
             return null;
         }
 
@@ -201,6 +207,12 @@ async function creditUserBalance(username, amount) {
         let data = resp.data;
         if (typeof data === 'string') {
              try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch(e) {}
+        }
+
+        // Detección de bloqueo HTML
+        if (typeof data === 'string' && data.trim().startsWith('<')) {
+            logBlockedHtml('DepositMoney', data);
+            return { success: false, error: 'IP Bloqueada (HTML)' };
         }
 
         console.log("📩 [API] Resultado:", JSON.stringify(data));
