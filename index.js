@@ -85,6 +85,23 @@ if (PROXY_URL) {
     httpsAgent = new HttpsProxyAgent(PROXY_URL);
 }
 
+// ✅ Log de IP pública usando el proxy (si existe)
+async function logProxyIP() {
+  try {
+    const res = await axios.get('https://api.ipify.org?format=json', {
+      httpsAgent,
+      timeout: 10000,
+    });
+    console.log('🌍 IP pública (via proxy):', res.data);
+  } catch (err) {
+    console.error('❌ Error obteniendo IP pública (proxy):', err.message);
+  }
+}
+
+if (httpsAgent) {
+  logProxyIP();
+}
+
 // Configuración idéntica a tu navegador para evitar bloqueos
 const client = axios.create({
     baseURL: API_URL,
