@@ -178,63 +178,6 @@ async function ensureSession() {
   return false;
 }
 
-// ================== USUARIO ==================
-async function getUserIdByName(targetUsername) {
-  console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
-
-  const ok = await ensureSession();
-  if (!ok) return null;
-
-  try {
-    const body = toFormUrlEncoded({
-      action: 'ShowUsers',
-      token: SESSION_TOKEN,
-      page: 1,
-      pagesize: 50,
-      viewtype: 'tree',
-      username: targetUsername,
-      showhidden: 'false',
-      parentid: SESSION_PARENT_ID || undefined
-    });
-
-    const headers2 = {};
-    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
-
-    const resp = await client.post('', body, {
-      headers: headers2,
-      validateStatus: () => true,
-      maxRedirects: 0
-    });
-
-    console.log("🔎 [DEBUG] status:", resp.status);
-    console.log("🔎 [DEBUG] content-type:", resp.headers?.['content-type']);
-
-    let data = resp.data;
-    if (typeof data === 'string') {
-      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
-    }
-
-    if (typeof data === 'string' && data.trim().startsWith('<')) {
-      logBlockedHtml('ShowUsers', data);
-      return null;
-    }
-
-    const list = data.users || data.data || (Array.isArray(data) ? data : []);
-    const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
-
-    if (found && found.user_id) {
-      console.log(`✅ [API] ID encontrado: ${found.user_id}`);
-      return found.user_id;
-    }
-
-    console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
-    return null;
-  } catch (err) {
-    console.error("❌ [API] Error Búsqueda:", err.message);
-    return null;
-  }
-}
-
 // ================== FECHAS ARGENTINA ==================
 function getYesterdayRangeArgentinaEpoch() {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -272,8 +215,9 @@ async function getUserNetYesterday(username) {
   const ok = await ensureSession();
   if (!ok) return { success: false, error: 'No hay sesión válida' };
 
-  const childId = await getUserIdByName(username);
-  if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
+  if (!SESSION_PARENT_ID) {
+    return { success: false, error: 'No se pudo obtener Admin ID' };
+  }
 
   try {
     const { fromEpoch, toEpoch } = getYesterdayRangeArgentinaEpoch();
@@ -285,8 +229,10 @@ async function getUserNetYesterday(username) {
       pagesize: 30,
       fromtime: fromEpoch,
       totime: toEpoch,
+      username: username,
       userrole: 'player',
-      childid: childId
+      direct: 'False',
+      childid: SESSION_PARENT_ID
     });
 
     const headers2 = {};
@@ -330,16 +276,13 @@ async function creditUserBalance(username, amount) {
   const ok = await ensureSession();
   if (!ok) return { success: false, error: 'No hay sesión válida' };
 
-  const childId = await getUserIdByName(username);
-  if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
-
   try {
     const amountCents = Math.round(parseFloat(amount) * 100);
 
     const body = toFormUrlEncoded({
       action: 'DepositMoney',
       token: SESSION_TOKEN,
-      childid: childId,
+      childid: (await getUserIdByName(username)) || undefined,
       amount: amountCents,
       currency: PLATFORM_CURRENCY,
       deposit_type: 'individual_bonus'
@@ -369,6 +312,60 @@ async function creditUserBalance(username, amount) {
     }
   } catch (err) {
     return { success: false, error: err.message };
+  }
+}
+
+// ================== BUSCAR USUARIO (para DepositMoney) ==================
+async function getUserIdByName(targetUsername) {
+  console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
+
+  const ok = await ensureSession();
+  if (!ok) return null;
+
+  try {
+    const body = toFormUrlEncoded({
+      action: 'ShowUsers',
+      token: SESSION_TOKEN,
+      page: 1,
+      pagesize: 50,
+      viewtype: 'tree',
+      username: targetUsername,
+      showhidden: 'false',
+      parentid: SESSION_PARENT_ID || undefined
+    });
+
+    const headers2 = {};
+    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+
+    const resp = await client.post('', body, {
+      headers: headers2,
+      validateStatus: () => true,
+      maxRedirects: 0
+    });
+
+    let data = resp.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
+    }
+
+    if (typeof data === 'string' && data.trim().startsWith('<')) {
+      logBlockedHtml('ShowUsers', data);
+      return null;
+    }
+
+    const list = data.users || data.data || (Array.isArray(data) ? data : []);
+    const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
+
+    if (found && found.user_id) {
+      console.log(`✅ [API] ID encontrado: ${found.user_id}`);
+      return found.user_id;
+    }
+
+    console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
+    return null;
+  } catch (err) {
+    console.error("❌ [API] Error Búsqueda:", err.message);
+    return null;
   }
 }
 
@@ -415,7 +412,6 @@ async function generateCheckResult(username, status, data = {}) {
   let systemPrompt = `Sos agente de casino. Usuario: "${username}". Breve.`;
   if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}.`;
   else if (status === 'api_error') systemPrompt += ` Hubo un error técnico.`;
-  else if (status === 'not_found') systemPrompt += ` Usuario no encontrado en nuestros registros.`;
   else if (status === 'no_balance') systemPrompt += ` Sin saldo suficiente para reintegro.`;
 
   try {
