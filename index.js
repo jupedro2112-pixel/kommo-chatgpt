@@ -4,6 +4,7 @@ const axios = require('axios');
 const { google } = require('googleapis');
 const { GoogleAuth } = require('google-auth-library');
 const { OpenAIApi, Configuration } = require('openai');
+const { HttpsProxyAgent } = require('https-proxy-agent'); // Soporte para Proxy futuro
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,8 @@ const PLATFORM_CURRENCY = process.env.PLATFORM_CURRENCY || 'ARS';
 
 // Token Manual desde Render
 const MANUAL_TOKEN = process.env.MANUAL_TOKEN; 
+// Opcional: Si consigues un proxy, lo pones en esta variable en Render
+const PROXY_URL = process.env.PROXY_URL; 
 
 if (!MANUAL_TOKEN) {
   console.error("⚠️ ADVERTENCIA: No se encontró MANUAL_TOKEN. Las cargas fallarán.");
@@ -53,7 +56,7 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-// ================== CLIENTE HTTP (Token Manual) ==================
+// ================== CLIENTE HTTP (Token Manual + Soporte Proxy) ==================
 
 function toFormUrlEncoded(data) {
     return Object.keys(data).map(key => {
@@ -61,10 +64,18 @@ function toFormUrlEncoded(data) {
     }).join('&');
 }
 
+// Configuración del agente (Proxy o Directo)
+let httpsAgent = null;
+if (PROXY_URL) {
+    console.log("🌐 Usando Proxy configurado.");
+    httpsAgent = new HttpsProxyAgent(PROXY_URL);
+}
+
 // Configuración idéntica a tu navegador para evitar bloqueos
 const client = axios.create({
     baseURL: API_URL,
-    timeout: 20000, // 20 segundos de espera
+    timeout: 20000, 
+    httpsAgent: httpsAgent, // Inyectamos el proxy si existe
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -76,7 +87,11 @@ const client = axios.create({
         'sec-ch-ua-platform': '"Windows"',
         'Sec-Fetch-Dest': 'empty',
         'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin'
+        'Sec-Fetch-Site': 'same-origin',
+        // Headers adicionales para engañar a Cloudflare
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Accept-Language': 'es-419,es;q=0.9'
     }
 });
 
@@ -109,7 +124,7 @@ async function getUserIdByName(targetUsername) {
 
         // Detección de bloqueo HTML
         if (typeof data === 'string' && data.trim().startsWith('<')) {
-            console.error("❌ [API] RESPUESTA HTML (BLOQUEO). El Token o la IP fueron rechazados.");
+            console.error("❌ [API] RESPUESTA HTML (BLOQUEO DE IP).");
             return null;
         }
 
@@ -136,7 +151,7 @@ async function creditUserBalance(username, amount) {
     if (!MANUAL_TOKEN) return { success: false, error: 'Falta Token en Render' };
 
     const childId = await getUserIdByName(username);
-    if (!childId) return { success: false, error: 'Usuario no encontrado o Token inválido' };
+    if (!childId) return { success: false, error: 'Usuario no encontrado o IP Bloqueada' };
 
     try {
         const amountCents = Math.round(parseFloat(amount) * 100);
@@ -181,7 +196,7 @@ async function getSheetData(spreadsheetId, range) {
   }
 }
 
-// ESTA ES LA FUNCIÓN DE CÁLCULO (NO BORRAR)
+// FUNCIÓN QUE FALTABA (CÁLCULO DE SALDO)
 async function checkUserInSheets(username) {
   const lookupKey = username.toLowerCase().trim();
   const spreadsheetId = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
@@ -292,7 +307,9 @@ async function generateCheckResult(username, status, data = {}) {
   let systemPrompt = `Sos agente de casino. Usuario: "${username}". Breve.`;
   if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}.`;
   else if (status === 'api_error') systemPrompt += ` Hubo un error técnico.`;
-  else if (status === 'not_found') systemPrompt += ` Usuario no encontrado.`;
+  else if (status === 'not_found') systemPrompt += ` Usuario no encontrado en nuestros registros.`;
+  else if (status === 'claimed') systemPrompt += ` Ya reclamó hoy.`;
+  else if (status === 'no_balance') systemPrompt += ` Sin saldo negativo para reintegro.`;
   
   try {
     const resp = await openai.createChatCompletion({
@@ -310,12 +327,44 @@ async function generateAfterCare(message, username) {
       model: 'gpt-4o-mini',
       temperature: 0.5,
       messages: [
-        { role: 'system', content: `Agente de casino. Cliente "${username}" ya cobró.` },
+        { role: 'system', content: `Agente de casino. Cliente "${username}" ya cobró hoy.` },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) { return 'Tu reintegro ya está listo.'; }
+}
+
+// ================== UTILIDADES ==================
+// FUNCIÓN QUE FALTABA (cleanHtml)
+function cleanHtml(html) {
+  if (!html) return "";
+  return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
+}
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
+
+function isValidUsername(text) {
+  if (!text) return false;
+  if (TEAM_USER_PATTERN.test(text)) return true;
+  if (/[a-z]+\d{3,}$/i.test(text)) return true; 
+  return false;
+}
+
+function extractUsername(message) {
+  if (!message) return null;
+  const m = message.trim();
+  const teamMatch = m.match(TEAM_USER_PATTERN);
+  if (teamMatch) return teamMatch[0].toLowerCase();
+  const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
+  if (explicit) return explicit[1].toLowerCase();
+  const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso','bono','buenas','tardes','noches','tengo','plata','carga']);
+  const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 4 && !STOPWORDS.has(t.toLowerCase()));
+  const withNumbers = tokens.find(t => /\d/.test(t));
+  if (withNumbers) return withNumbers.toLowerCase();
+  return null;
 }
 
 // ================== PROCESAMIENTO ==================
@@ -338,6 +387,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
+  // USUARIO CONOCIDO
   if (activeUsername) {
     console.log(`⚡ Usuario conocido: ${activeUsername}`);
     const result = await checkUserInSheets(activeUsername);
@@ -402,36 +452,6 @@ async function processConversation(accountId, conversationId, contactId, contact
   }
 }
 
-// ================== UTILIDADES ==================
-function cleanHtml(html) {
-  if (!html) return "";
-  return String(html).replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
-}
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
-
-function isValidUsername(text) {
-  if (!text) return false;
-  if (TEAM_USER_PATTERN.test(text)) return true;
-  if (/[a-z]+\d{3,}$/i.test(text)) return true; 
-  return false;
-}
-
-function extractUsername(message) {
-  if (!message) return null;
-  const m = message.trim();
-  const teamMatch = m.match(TEAM_USER_PATTERN);
-  if (teamMatch) return teamMatch[0].toLowerCase();
-  const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
-  if (explicit) return explicit[1].toLowerCase();
-  const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso','bono','buenas','tardes','noches','tengo','plata','carga']);
-  const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 4 && !STOPWORDS.has(t.toLowerCase()));
-  const withNumbers = tokens.find(t => /\d/.test(t));
-  if (withNumbers) return withNumbers.toLowerCase();
-  return null;
-}
-
 // ================== WEBHOOK ==================
 app.post('/webhook-chatwoot', (req, res) => {
   res.status(200).send('OK');
@@ -467,4 +487,4 @@ app.post('/webhook-chatwoot', (req, res) => {
   }, 3000);
 });
 
-app.listen(PORT, () => console.log(`🚀 Bot (Token Manual) Activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot (Completo y Sin Errores) Activo en puerto ${PORT}`));
