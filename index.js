@@ -36,14 +36,28 @@ const openai = new OpenAIApi(new Configuration({ apiKey: OPENAI_API_KEY }));
 
 let GOOGLE_CREDENTIALS = null;
 if (GOOGLE_CREDENTIALS_JSON) {
-  try { GOOGLE_CREDENTIALS = JSON.parse(GOOGLE_CREDENTIALS_JSON); } 
-  catch (err) { console.error('❌ Error Credentials JSON:', err.message); }
+  try {
+    GOOGLE_CREDENTIALS = JSON.parse(GOOGLE_CREDENTIALS_JSON);
+
+    // ✅ Reparar private_key si viene con \\n
+    if (GOOGLE_CREDENTIALS.private_key) {
+      GOOGLE_CREDENTIALS.private_key = GOOGLE_CREDENTIALS.private_key.replace(/\\n/g, '\n');
+    }
+
+    console.log(`✅ Google credentials cargadas: ${GOOGLE_CREDENTIALS.client_email}`);
+  } catch (err) {
+    console.error('❌ Error Credentials JSON:', err.message);
+  }
+} else {
+  console.error('❌ GOOGLE_CREDENTIALS_JSON no está definido.');
 }
 
-const auth = new GoogleAuth({
-  credentials: GOOGLE_CREDENTIALS,
-  scopes: ['https://www.googleapis.com/auth.spreadsheets'],
-});
+const auth = GOOGLE_CREDENTIALS
+  ? new GoogleAuth({
+      credentials: GOOGLE_CREDENTIALS,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    })
+  : null;
 
 const messageBuffer = new Map(); 
 const userStates = new Map(); 
@@ -94,16 +108,6 @@ const client = axios.create({
         'Accept-Language': 'es-419,es;q=0.9'
     }
 });
-
-// === TEST DE PROXY (TEMPORAL) ===
-(async () => {
-  try {
-    const ipcheck = await axios.get('https://api.ipify.org?format=json', { httpsAgent });
-    console.log("🌍 Proxy IP:", ipcheck.data);
-  } catch (err) {
-    console.error("❌ Error Proxy Test:", err.message);
-  }
-})();
 
 // 1. BUSCAR USUARIO
 async function getUserIdByName(targetUsername) {
@@ -196,6 +200,7 @@ async function creditUserBalance(username, amount) {
 // ================== GOOGLE SHEETS ==================
 async function getSheetData(spreadsheetId, range) {
   try {
+    if (!auth) throw new Error('GoogleAuth no inicializado (credenciales inválidas)');
     const authClient = await auth.getClient();
     const sheets = google.sheets({ version: 'v4', auth: authClient });
     const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
