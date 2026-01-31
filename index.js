@@ -743,7 +743,14 @@ async function processConversation(accountId, conversationId, contactId, contact
   const markReplied = () => {
     state.greeted = true;
     userStates.set(conversationId, state);
+    firstReplyByConversation.set(conversationId, true);
   };
+
+  if (!state.greeted) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
+    markReplied();
+    return;
+  }
 
   if (isNameQuestion(fullMessage)) {
     await sendReplyToChatwoot(accountId, conversationId, 'Mi nombre es Camila, ¿en qué puedo ayudarte hoy?');
@@ -955,18 +962,14 @@ app.post('/webhook-chatwoot', (req, res) => {
 
   if (buffer.timer) clearTimeout(buffer.timer);
 
-  const isFirstMessage = !userStates.get(conversationId)?.greeted;
-  const bufferDelay = isFirstMessage ? 0 : 3000;
-
   buffer.timer = setTimeout(() => {
     const fullText = buffer.messages.join(" . ");
     messageBuffer.delete(conversationId);
     (async () => {
       console.log(`⏳ Procesando... (Conv ${conversationId})`);
-      if (!isFirstMessage) await sleep(3500);
       await processConversation(accountId, conversationId, contactId, contactName, fullText);
     })();
-  }, bufferDelay);
+  }, 3000);
 });
 
 app.listen(PORT, () => console.log(`🚀 Bot (Token Fresco) Activo en puerto ${PORT}`));
