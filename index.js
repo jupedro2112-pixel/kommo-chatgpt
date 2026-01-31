@@ -650,6 +650,11 @@ function isComoReclamarQuestion(message) {
   return m.includes('como reclamo') || m.includes('cómo reclamo') || m.includes('como pedir') || m.includes('cómo pedir') || m.includes('reclamar reintegro');
 }
 
+function isTodayDepositQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('cargue hoy') || m.includes('cargué hoy') || m.includes('deposite hoy') || m.includes('deposité hoy');
+}
+
 async function generateCasualChat(message, conversationId, context = {}) {
   try {
     await applyTypingDelay(message, conversationId);
@@ -677,7 +682,7 @@ async function generateCheckResult(username, status, data = {}, conversationId) 
   let systemPrompt = `Sos Camila, agente real de jugaygana. Usuario: "${username}". Respuesta breve, humana, con algun error de tipeo leve. Nunca digas que sos IA ni bot. Link: ${PLATFORM_URL}.`;
   if (status === 'success') systemPrompt += ` Reintegro de ayer acreditado por $${data.bonus}. Decí que ya puede verlo en la plataforma.`;
   else if (status === 'api_error') systemPrompt += ` No pude encontrar el usuario o hubo un error al consultarlo. Pedí que corrobore su usuario con el WhatsApp principal y que lo envíe bien para acreditar el reintegro.`;
-  else if (status === 'no_balance') systemPrompt += ` Hoy no corresponde reintegro: ayer no hubo cargas/retiros o el neto quedó a favor del cliente (más retiros que depósitos), por eso no aplica.`;
+  else if (status === 'no_balance') systemPrompt += ` Hoy no corresponde reintegro porque ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.`;
   else if (status === 'claimed') systemPrompt += ` Ya fue reclamado hoy.`;
 
   const delaySeed = `${status} ${data?.bonus || ''}`;
@@ -802,6 +807,12 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
+  if (isTodayDepositQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Si cargaste hoy, lo vas a ver reflejado mañana en cualquier horario.');
+    markReplied();
+    return;
+  }
+
   if (isNetoQuestion(fullMessage)) {
     await sendReplyToChatwoot(accountId, conversationId, 'El neto de ayer es la suma de todas las cargas menos la suma de todos los retiros de ayer.');
     markReplied();
@@ -855,7 +866,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     if (state.lastReason === 'balance_limit') {
       explain = 'No corresponde reintegro si tu saldo actual supera $1000. Para que se acredite, tenés que tener menos de $1000.';
     } else if (state.lastReason === 'no_balance') {
-      explain = 'Ayer no hubo cargas/retiros o el neto quedó a tu favor, por eso hoy no aplica reintegro.';
+      explain = 'Ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.';
     } else if (state.lastReason === 'claimed') {
       explain = 'Ya lo reclamaste hoy. Mañana podés volver a pedirlo.';
     } else if (state.lastReason === 'user_not_found') {
@@ -877,7 +888,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     if (state.lastReason === 'balance_limit') {
       explain = 'No corresponde reintegro si tu saldo actual supera $1000. Para que se acredite, tenés que tener menos de $1000.';
     } else if (state.lastReason === 'no_balance') {
-      explain = 'Ayer no hubo cargas/retiros o el neto quedó a tu favor, por eso hoy no aplica reintegro.';
+      explain = 'Ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.';
     } else if (state.lastReason === 'claimed') {
       explain = 'Ya lo reclamaste hoy. Mañana podés volver a pedirlo.';
     } else if (state.lastReason === 'user_not_found') {
@@ -1009,18 +1020,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (usernameToCheck) {
     console.log(`⚡ Usuario detectado: ${usernameToCheck}`);
 
-    // 1) Ya reclamado hoy
     const claimedCheck = await checkClaimedToday(usernameToCheck);
-    if (claimedCheck.success && claimedCheck.claimed) {
-      const reply = await generateCheckResult(usernameToCheck, 'claimed', {}, conversationId);
-      await sendReplyToChatwoot(accountId, conversationId, reply);
-      state.claimed = true;
-      state.username = usernameToCheck;
-      state.lastReason = 'claimed';
-      userStates.set(conversationId, state);
-      markReplied();
-      return;
-    }
 
     // 2) Saldo actual
     const userInfo = await getUserInfoByName(usernameToCheck);
@@ -1045,6 +1045,21 @@ async function processConversation(accountId, conversationId, contactId, contact
     const result = await getUserNetYesterday(usernameToCheck);
     if (result.success) {
       const net = result.net;
+
+      if (claimedCheck.success && claimedCheck.claimed && net > 1) {
+        const expectedBonus = Number((net * 0.08).toFixed(2));
+        if (claimedCheck.totalBonus >= expectedBonus - 0.01) {
+          const reply = await generateCheckResult(usernameToCheck, 'claimed', {}, conversationId);
+          await sendReplyToChatwoot(accountId, conversationId, reply);
+          state.claimed = true;
+          state.username = usernameToCheck;
+          state.lastReason = 'claimed';
+          userStates.set(conversationId, state);
+          markReplied();
+          return;
+        }
+      }
+
       if (net > 1) {
         const bonus = Number((net * 0.08).toFixed(2));
         const apiResult = await creditUserBalance(usernameToCheck, bonus);
