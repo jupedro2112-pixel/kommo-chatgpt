@@ -544,49 +544,53 @@ async function updateChatwootContact(accountId, contactId, username) {
 }
 
 // ================== GENERADORES IA ==================
-function calcTypingDelayMs(text) {
+const firstReplyByConversation = new Map();
+
+function calcTypingDelayMs(text, conversationId) {
+  if (conversationId && !firstReplyByConversation.get(conversationId)) return 1000;
   const len = (text || '').length;
-  const extra = Math.min(5000, Math.floor(len / 12) * 250);
-  return Math.min(10000, 5000 + extra);
+  const extra = Math.min(7000, Math.floor(len / 12) * 250);
+  return Math.min(10000, 3000 + extra);
 }
 
-async function applyTypingDelay(text) {
-  const delay = calcTypingDelayMs(text);
+async function applyTypingDelay(text, conversationId) {
+  const delay = calcTypingDelayMs(text, conversationId);
   await sleep(delay);
+  if (conversationId) firstReplyByConversation.set(conversationId, true);
 }
 
-async function generateCasualChat(message) {
+async function generateCasualChat(message, conversationId) {
   try {
-    await applyTypingDelay(message);
+    await applyTypingDelay(message, conversationId);
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.4,
       messages: [
         {
           role: 'system',
-          content: `Sos Camila, agente real de Jugá y Ganá (Argentina), atención 24 hs. Tu tarea es ayudar y gestionar el reembolso diario. Nunca digas que sos IA ni bot. Escribí como persona real: breve, clara y con algun error de tipeo leve y natural. Si falta el usuario, pedilo. Si el cliente no recuerda su usuario, indicá que consulte en el WhatsApp principal de su equipo. El reintegro es por el día de ayer (00:00-23:59 AR) y se acredita automáticamente cuando tengamos el usuario. Link: ${PLATFORM_URL}.`
+          content: `Sos Camila, agente real de Jugá y Ganá (Argentina), atención 24 hs. Nunca digas que sos IA ni bot. Respuestas breves, humanas, con algun error de tipeo leve y natural. Tu tarea es gestionar el reembolso diario y ayudar. Si el cliente pide explicación, explicá sin pedir usuario. Si falta el usuario para acreditar, pedilo. Si no recuerda su usuario, indicá que consulte al WhatsApp principal de su equipo. Reintegro: siempre por el día de ayer (00:00-23:59 AR). Cálculo: neto = depósitos - retiros, y el reintegro es 8% del neto si el neto es mayor a $1. Si el saldo actual del cliente supera $1000, no se acredita reembolso (debe tener menos de $1000). Link: ${PLATFORM_URL}.`
         },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
-    await applyTypingDelay(message);
+    await applyTypingDelay(message, conversationId);
     return 'Hola! soy Cami, pasame tu usuario y te reviso el reintegro.';
   }
 }
 
-async function generateCheckResult(username, status, data = {}) {
+async function generateCheckResult(username, status, data = {}, conversationId) {
   let systemPrompt = `Sos Camila, agente real de Jugá y Ganá. Usuario: "${username}". Respuesta breve, humana, con algun error de tipeo leve. Nunca digas que sos IA ni bot. Link: ${PLATFORM_URL}.`;
   if (status === 'success') systemPrompt += ` Reintegro de ayer acreditado por $${data.bonus}. Decí que ya puede verlo en la plataforma.`;
-  else if (status === 'api_error') systemPrompt += ` Hubo un problema técnico al consultar o acreditar.`;
-  else if (status === 'no_balance') systemPrompt += ` El neto de ayer no supera $1, por eso no aplica reintegro hoy.`;
+  else if (status === 'api_error') systemPrompt += ` No pude encontrar el usuario o hubo un error al consultarlo. Pedí que corrobore su usuario con el WhatsApp principal y que lo envíe bien para acreditar el reintegro.`;
+  else if (status === 'no_balance') systemPrompt += ` Hoy no corresponde reintegro: ayer no hubo cargas/retiros o el neto quedó a favor del cliente (más retiros que depósitos), por eso no aplica.`;
   else if (status === 'claimed') systemPrompt += ` Ya fue reclamado hoy.`;
 
   const delaySeed = `${status} ${data?.bonus || ''}`;
 
   try {
-    await applyTypingDelay(delaySeed);
+    await applyTypingDelay(delaySeed, conversationId);
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.4,
@@ -597,14 +601,14 @@ async function generateCheckResult(username, status, data = {}) {
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
-    await applyTypingDelay(delaySeed);
+    await applyTypingDelay(delaySeed, conversationId);
     return status === 'success' ? `Listo, ya lo tenés acreditado.` : 'No se pudo procesar, probá más tarde.';
   }
 }
 
-async function generateAfterCare(message, username) {
+async function generateAfterCare(message, username, conversationId) {
   try {
-    await applyTypingDelay(message);
+    await applyTypingDelay(message, conversationId);
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.5,
@@ -618,7 +622,7 @@ async function generateAfterCare(message, username) {
     });
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
-    await applyTypingDelay(message);
+    await applyTypingDelay(message, conversationId);
     return 'El reintegro ya quedó hoy. Mañana podés volver a pedirlo.';
   }
 }
@@ -718,7 +722,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   }
 
   if (state.claimed && activeUsername) {
-    const reply = await generateAfterCare(fullMessage, activeUsername);
+    const reply = await generateAfterCare(fullMessage, activeUsername, conversationId);
     await sendReplyToChatwoot(accountId, conversationId, reply);
     return;
   }
@@ -730,7 +734,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     // 1) Ya reclamado hoy
     const claimedCheck = await checkClaimedToday(usernameToCheck);
     if (claimedCheck.success && claimedCheck.claimed) {
-      const reply = await generateCheckResult(usernameToCheck, 'claimed');
+      const reply = await generateCheckResult(usernameToCheck, 'claimed', {}, conversationId);
       await sendReplyToChatwoot(accountId, conversationId, reply);
       state.claimed = true;
       state.username = usernameToCheck;
@@ -741,7 +745,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     // 2) Saldo actual
     const userInfo = await getUserInfoByName(usernameToCheck);
     if (!userInfo) {
-      const reply = await generateCheckResult(usernameToCheck, 'api_error');
+      const reply = await generateCheckResult(usernameToCheck, 'api_error', {}, conversationId);
       await sendReplyToChatwoot(accountId, conversationId, reply);
       return;
     }
@@ -760,31 +764,31 @@ async function processConversation(accountId, conversationId, contactId, contact
         const apiResult = await creditUserBalance(usernameToCheck, bonus);
         if (apiResult.success) {
           await appendBonusToSheet(usernameToCheck, bonus);
-          const reply = await generateCheckResult(usernameToCheck, 'success', { bonus });
+          const reply = await generateCheckResult(usernameToCheck, 'success', { bonus }, conversationId);
           await sendReplyToChatwoot(accountId, conversationId, reply);
           await updateChatwootContact(accountId, contactId, usernameToCheck);
           state.claimed = true;
           state.username = usernameToCheck;
           userStates.set(conversationId, state);
         } else {
-          const reply = await generateCheckResult(usernameToCheck, 'api_error');
+          const reply = await generateCheckResult(usernameToCheck, 'api_error', {}, conversationId);
           await sendReplyToChatwoot(accountId, conversationId, reply);
         }
       } else {
-        const reply = await generateCheckResult(usernameToCheck, 'no_balance', { net });
+        const reply = await generateCheckResult(usernameToCheck, 'no_balance', { net }, conversationId);
         await sendReplyToChatwoot(accountId, conversationId, reply);
         state.claimed = true;
         state.username = usernameToCheck;
         userStates.set(conversationId, state);
       }
     } else {
-      const reply = await generateCheckResult(usernameToCheck, 'api_error');
+      const reply = await generateCheckResult(usernameToCheck, 'api_error', {}, conversationId);
       await sendReplyToChatwoot(accountId, conversationId, reply);
     }
     return;
   }
 
-  const reply = await generateCasualChat(fullMessage);
+  const reply = await generateCasualChat(fullMessage, conversationId);
   await sendReplyToChatwoot(accountId, conversationId, reply);
 }
 
