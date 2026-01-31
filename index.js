@@ -583,8 +583,13 @@ function isBalanceQuestion(message) {
 
 function isYesterdayTransfersQuestion(message) {
   const m = (message || '').toLowerCase();
-  const asksTransfers = m.includes('carga') || m.includes('deposit') || m.includes('retiro') || m.includes('movim') || m.includes('neto');
+  const asksTransfers = m.includes('carga') || m.includes('deposit') || m.includes('retiro') || m.includes('movim');
   return m.includes('ayer') && asksTransfers;
+}
+
+function isNetoQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('neto') && (m.includes('que es') || m.includes('qué es') || m.includes('que seria') || m.includes('qué sería') || m.includes('explica'));
 }
 
 function isExplanationQuestion(message) {
@@ -598,6 +603,13 @@ function isExplanationQuestion(message) {
     m.includes('explica') ||
     m.includes('explicame')
   );
+}
+
+function isConfusedMessage(message) {
+  const m = (message || '').trim().toLowerCase();
+  if (!m) return false;
+  if (m.length <= 4 && /[\?\!]/.test(m)) return true;
+  return m.includes('no entiendo') || m.includes('??') || m.includes('???');
 }
 
 async function generateCasualChat(message, conversationId, context = {}) {
@@ -736,7 +748,7 @@ function randomTempName() {
 async function processConversation(accountId, conversationId, contactId, contactName, fullMessage) {
   console.log(`🤖 Msg: "${fullMessage}" | Contact: "${contactName}"`);
 
-  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, lastReason: null, lastActivity: Date.now() };
+  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, lastReason: null, pendingIntent: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
   userStates.set(conversationId, state);
 
@@ -748,6 +760,28 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (!state.greeted) {
     await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
+    markReplied();
+    return;
+  }
+
+  if (isNetoQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'El neto de ayer es la suma de todas las cargas menos la suma de todos los retiros de ayer.');
+    markReplied();
+    return;
+  }
+
+  if (isConfusedMessage(fullMessage) && state.lastReason) {
+    let explain = 'Te explico: el reintegro se calcula por el día de ayer.';
+    if (state.lastReason === 'balance_limit') {
+      explain = 'No corresponde reintegro si tu saldo actual supera $1000. Para que se acredite, tenés que tener menos de $1000.';
+    } else if (state.lastReason === 'no_balance') {
+      explain = 'Ayer no hubo cargas/retiros o el neto quedó a tu favor, por eso hoy no aplica reintegro.';
+    } else if (state.lastReason === 'claimed') {
+      explain = 'Ya lo reclamaste hoy. Mañana podés volver a pedirlo.';
+    } else if (state.lastReason === 'user_not_found') {
+      explain = 'Ese usuario no figura. Revisalo con tu WhatsApp principal y pasamelo bien.';
+    }
+    await sendReplyToChatwoot(accountId, conversationId, explain);
     markReplied();
     return;
   }
@@ -784,6 +818,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     state.username = null;
     state.claimed = false;
     state.lastReason = null;
+    state.pendingIntent = null;
     userStates.set(conversationId, state);
 
     const tempName = randomTempName();
@@ -804,8 +839,43 @@ async function processConversation(accountId, conversationId, contactId, contact
   const usernameFromMsg = extractUsername(fullMessage);
   const usernameToCheck = activeUsername || usernameFromMsg;
 
+  if (state.pendingIntent && usernameToCheck) {
+    if (state.pendingIntent === 'balance') {
+      const userInfo = await getUserInfoByName(usernameToCheck);
+      if (!userInfo) {
+        state.lastReason = 'user_not_found';
+        await sendReplyToChatwoot(accountId, conversationId, 'No encuentro ese usuario. Revisalo con tu WhatsApp principal y pasamelo bien.');
+        markReplied();
+        return;
+      }
+      await sendReplyToChatwoot(accountId, conversationId, `Tu saldo actual es $${Number(userInfo.balance).toFixed(2)}.`);
+      state.pendingIntent = null;
+      markReplied();
+      return;
+    }
+
+    if (state.pendingIntent === 'transfers') {
+      const result = await getUserNetYesterday(usernameToCheck);
+      if (!result.success) {
+        state.lastReason = 'api_error';
+        await sendReplyToChatwoot(accountId, conversationId, 'No pude consultar eso ahora, probá en un rato.');
+        markReplied();
+        return;
+      }
+      await sendReplyToChatwoot(
+        accountId,
+        conversationId,
+        `Ayer tuviste cargas $${result.totalDeposits.toFixed(2)} y retiros $${result.totalWithdraws.toFixed(2)}. Neto $${result.net.toFixed(2)}.`
+      );
+      state.pendingIntent = null;
+      markReplied();
+      return;
+    }
+  }
+
   if (isBalanceQuestion(fullMessage)) {
     if (!usernameToCheck) {
+      state.pendingIntent = 'balance';
       await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario y te digo el saldo.');
       markReplied();
       return;
@@ -826,6 +896,7 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (isYesterdayTransfersQuestion(fullMessage)) {
     if (!usernameToCheck) {
+      state.pendingIntent = 'transfers';
       await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario y te digo las cargas/retiros de ayer.');
       markReplied();
       return;
