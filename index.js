@@ -348,8 +348,11 @@ async function getUserInfoByName(targetUsername) {
       let balanceRaw = found.user_balance ?? found.balance ?? found.balance_amount ?? found.available_balance ?? 0;
       balanceRaw = Number(balanceRaw || 0);
 
+      // Corrección: si viene como entero, se interpreta como centavos
       let balancePesos = balanceRaw;
-      if (balanceRaw > 10000) balancePesos = balanceRaw / 100;
+      if (Number.isInteger(balanceRaw)) {
+        balancePesos = balanceRaw / 100;
+      }
 
       console.log(`✅ [API] ID encontrado: ${found.user_id} | Balance: ${balancePesos}`);
       return { id: found.user_id, balance: balancePesos };
@@ -429,7 +432,7 @@ async function getUserNetYesterday(username) {
 // ================== RECLAMO HOY ==================
 async function checkClaimedToday(username) {
   const ok = await ensureSession();
-  if (!ok) return { success: false, error: 'No hay sesión válida' };
+  if (!ok) return { success: false, error: 'No hay sesi��n válida' };
 
   if (!SESSION_PARENT_ID) {
     return { success: false, error: 'No se pudo obtener Admin ID' };
