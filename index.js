@@ -612,6 +612,41 @@ function isConfusedMessage(message) {
   return m.includes('no entiendo') || m.includes('??') || m.includes('???');
 }
 
+function isReintegroQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('reintegro') || m.includes('reembolso');
+}
+
+function isComoSeCalculaQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('como se calcula') || m.includes('cómo se calcula') || m.includes('calculo del reintegro') || m.includes('calculo de reintegro');
+}
+
+function isHorarioQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('horario') || m.includes('hasta que hora') || m.includes('hasta qué hora') || m.includes('a que hora') || m.includes('a qué hora');
+}
+
+function isRequisitosQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('requisitos') || m.includes('condiciones') || m.includes('que necesito') || m.includes('qué necesito');
+}
+
+function isLinkQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('link') || m.includes('pagina') || m.includes('página') || m.includes('url') || m.includes('web');
+}
+
+function isPorcentajeQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('porcentaje') || m.includes('8%') || m.includes('ocho por ciento');
+}
+
+function isComoReclamarQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('como reclamo') || m.includes('cómo reclamo') || m.includes('como pedir') || m.includes('cómo pedir') || m.includes('reclamar reintegro');
+}
+
 async function generateCasualChat(message, conversationId, context = {}) {
   try {
     await applyTypingDelay(message, conversationId);
@@ -766,6 +801,48 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (isNetoQuestion(fullMessage)) {
     await sendReplyToChatwoot(accountId, conversationId, 'El neto de ayer es la suma de todas las cargas menos la suma de todos los retiros de ayer.');
+    markReplied();
+    return;
+  }
+
+  if (isLinkQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, `La web es ${PLATFORM_URL}.`);
+    markReplied();
+    return;
+  }
+
+  if (isReintegroQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer (depósitos menos retiros), si ese neto es mayor a $1.');
+    markReplied();
+    return;
+  }
+
+  if (isComoSeCalculaQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Se calcula con el neto de ayer: sumás cargas, restás retiros, y si da más de $1 se acredita el 8%.');
+    markReplied();
+    return;
+  }
+
+  if (isPorcentajeQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer.');
+    markReplied();
+    return;
+  }
+
+  if (isRequisitosQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Necesito tu usuario. El reintegro es por ayer y se acredita si el neto es mayor a $1 y tu saldo actual es menor a $1000.');
+    markReplied();
+    return;
+  }
+
+  if (isComoReclamarQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Para reclamar el reintegro solo pasame tu usuario y lo reviso.');
+    markReplied();
+    return;
+  }
+
+  if (isHorarioQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'El reintegro se reclama de 00:00 a 23:59 y corresponde al día de ayer.');
     markReplied();
     return;
   }
