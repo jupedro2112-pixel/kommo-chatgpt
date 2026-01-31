@@ -544,49 +544,83 @@ async function updateChatwootContact(accountId, contactId, username) {
 }
 
 // ================== GENERADORES IA ==================
+function calcTypingDelayMs(text) {
+  const len = (text || '').length;
+  const extra = Math.min(5000, Math.floor(len / 12) * 250);
+  return Math.min(10000, 5000 + extra);
+}
+
+async function applyTypingDelay(text) {
+  const delay = calcTypingDelayMs(text);
+  await sleep(delay);
+}
+
 async function generateCasualChat(message) {
   try {
+    await applyTypingDelay(message);
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.4,
       messages: [
-        { role: 'system', content: `Tu nombre es Camila de Jugaygana (Argentina). Tu función principal es atención al cliente y reembolsos diarios, si el cliente no encuentra decirle que pida su usuario correcto a su whatsapp principal. Link: ${PLATFORM_URL}. Mensajes cortos, claros y humanos. Sos una persona humano real, argentina.` },
+        {
+          role: 'system',
+          content: `Sos Camila, agente real de Jugá y Ganá (Argentina), atención 24 hs. Tu tarea es ayudar y gestionar el reembolso diario. Nunca digas que sos IA ni bot. Escribí como persona real: breve, clara y con algun error de tipeo leve y natural. Si falta el usuario, pedilo. Si el cliente no recuerda su usuario, indicá que consulte en el WhatsApp principal de su equipo. El reintegro es por el día de ayer (00:00-23:59 AR) y se acredita automáticamente cuando tengamos el usuario. Link: ${PLATFORM_URL}.`
+        },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'Hola, soy Camila. Pasame tu usuario para revisar el reintegro.'; }
+  } catch (err) {
+    await applyTypingDelay(message);
+    return 'Hola! soy Cami, pasame tu usuario y te reviso el reintegro.';
+  }
 }
 
 async function generateCheckResult(username, status, data = {}) {
-  let systemPrompt = `Sos Camila de Jugaygana. Usuario: "${username}". Breve y profesional. Link: ${PLATFORM_URL}.`;
-  if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}. Decir que puede verlo en la plataforma.`;
-  else if (status === 'api_error') systemPrompt += ` Error técnico.`;
-  else if (status === 'no_balance') systemPrompt += ` No cumple condiciones.`;
+  let systemPrompt = `Sos Camila, agente real de Jugá y Ganá. Usuario: "${username}". Respuesta breve, humana, con algun error de tipeo leve. Nunca digas que sos IA ni bot. Link: ${PLATFORM_URL}.`;
+  if (status === 'success') systemPrompt += ` Reintegro de ayer acreditado por $${data.bonus}. Decí que ya puede verlo en la plataforma.`;
+  else if (status === 'api_error') systemPrompt += ` Hubo un problema técnico al consultar o acreditar.`;
+  else if (status === 'no_balance') systemPrompt += ` El neto de ayer no supera $1, por eso no aplica reintegro hoy.`;
   else if (status === 'claimed') systemPrompt += ` Ya fue reclamado hoy.`;
 
+  const delaySeed = `${status} ${data?.bonus || ''}`;
+
   try {
+    await applyTypingDelay(delaySeed);
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.4,
-      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: "Generá respuesta." }],
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: "Generá respuesta." }
+      ],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return status === 'success' ? `Listo, ya lo tenés acreditado.` : 'No se puede procesar.'; }
+  } catch (err) {
+    await applyTypingDelay(delaySeed);
+    return status === 'success' ? `Listo, ya lo tenés acreditado.` : 'No se pudo procesar, probá más tarde.';
+  }
 }
 
 async function generateAfterCare(message, username) {
   try {
+    await applyTypingDelay(message);
     const resp = await openai.createChatCompletion({
       model: 'gpt-4o-mini',
       temperature: 0.5,
       messages: [
-        { role: 'system', content: `Sos Camila. El cliente "${username}" ya cobró hoy. Mensaje corto.` },
+        {
+          role: 'system',
+          content: `Sos Camila, agente real. El cliente "${username}" ya cobró hoy. Respuesta corta, humana y con algun typo leve. Nunca digas que sos IA ni bot.`
+        },
         { role: 'user', content: message },
       ],
     });
     return resp.data?.choices?.[0]?.message?.content;
-  } catch (err) { return 'El reintegro ya fue acreditado hoy. Podés volver mañana.'; }
+  } catch (err) {
+    await applyTypingDelay(message);
+    return 'El reintegro ya quedó hoy. Mañana podés volver a pedirlo.';
+  }
 }
 
 // ================== UTILIDADES ==================
