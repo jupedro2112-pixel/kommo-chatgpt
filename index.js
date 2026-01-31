@@ -801,6 +801,13 @@ async function processConversation(accountId, conversationId, contactId, contact
     firstReplyByConversation.set(conversationId, true);
   };
 
+  const usernameFromMsg = extractUsername(fullMessage);
+  if (!state.greeted && usernameFromMsg) {
+    state.greeted = true;
+    state.username = usernameFromMsg;
+    userStates.set(conversationId, state);
+  }
+
   if (!state.greeted) {
     await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
     markReplied();
@@ -927,7 +934,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     userStates.set(conversationId, state);
   }
 
-  const usernameFromMsg = extractUsername(fullMessage);
   const usernameToCheck = activeUsername || usernameFromMsg;
 
   if (state.pendingIntent && usernameToCheck) {
