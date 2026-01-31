@@ -24,6 +24,8 @@ const GOOGLE_CREDENTIALS_JSON = process.env.GOOGLE_CREDENTIALS_JSON;
 const SHEET_ID = '16rLLI5eZ283Qvfgcaxa1S-dC6g_yFHqT9sfDXoluTkg';
 const SHEET_NAME = 'Sheet1';
 
+const PLATFORM_URL = 'www.jugaygana.bet';
+
 // Credenciales para login automático
 const PLATFORM_USER = process.env.PLATFORM_USER;
 const PLATFORM_PASS = process.env.PLATFORM_PASS;
@@ -479,7 +481,6 @@ async function creditUserBalance(username, amount) {
   if (!userInfo) return { success: false, error: 'Usuario no encontrado' };
 
   try {
-    // ✅ DepositMoney espera CENTAVOS
     const amountCents = Math.round(parseFloat(amount) * 100);
 
     const body = toFormUrlEncoded({
@@ -549,7 +550,7 @@ async function generateCasualChat(message) {
       model: 'gpt-4o-mini',
       temperature: 0.4,
       messages: [
-        { role: 'system', content: `Sos Camila de Jugá y Ganá (Argentina). Mensajes cortos, claros, profesionales. Nunca decir que sos IA.` },
+        { role: 'system', content: `Tu nombre es Camila de Jugaygana (Argentina). Tu función principal es atención al cliente y reembolsos diarios, si el cliente no encuentra decirle que pida su usuario correcto a su whatsapp principal. Link: ${PLATFORM_URL}. Mensajes cortos, claros y humanos. Sos una persona humano real, argentina.` },
         { role: 'user', content: message },
       ],
     });
@@ -558,7 +559,7 @@ async function generateCasualChat(message) {
 }
 
 async function generateCheckResult(username, status, data = {}) {
-  let systemPrompt = `Sos Camila de Jugá y Ganá. Usuario: "${username}". Breve y profesional.`;
+  let systemPrompt = `Sos Camila de Jugaygana. Usuario: "${username}". Breve y profesional. Link: ${PLATFORM_URL}.`;
   if (status === 'success') systemPrompt += ` ÉXITO. Acreditado: ${data.bonus}. Decir que puede verlo en la plataforma.`;
   else if (status === 'api_error') systemPrompt += ` Error técnico.`;
   else if (status === 'no_balance') systemPrompt += ` No cumple condiciones.`;
@@ -633,6 +634,19 @@ function isWrongUsernameMessage(message) {
   );
 }
 
+function isForgotUsernameMessage(message) {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes('no recuerdo mi usuario') ||
+    m.includes('no me acuerdo mi usuario') ||
+    m.includes('olvide mi usuario') ||
+    m.includes('olvidé mi usuario') ||
+    m.includes('no se mi usuario') ||
+    m.includes('no sé mi usuario')
+  );
+}
+
 function randomTempName() {
   return `temp-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -644,6 +658,11 @@ async function processConversation(accountId, conversationId, contactId, contact
   let state = userStates.get(conversationId) || { claimed: false, username: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
   userStates.set(conversationId, state);
+
+  if (isForgotUsernameMessage(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Si no recordás tu usuario, escribile a tu agente en WhatsApp principal para que te lo confirme.');
+    return;
+  }
 
   if (isWrongUsernameMessage(fullMessage)) {
     state.username = null;
