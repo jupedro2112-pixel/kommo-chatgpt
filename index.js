@@ -595,6 +595,11 @@ function isNetoQuestion(message) {
   return m.includes('neto') && (m.includes('que es') || m.includes('qué es') || m.includes('que seria') || m.includes('qué sería') || m.includes('explica'));
 }
 
+function isNetoAmountQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('cuanto es el neto') || m.includes('cuánto es el neto') || m.includes('cuanto neto') || m.includes('cuánto neto');
+}
+
 function isExplanationQuestion(message) {
   const m = (message || '').toLowerCase();
   return (
@@ -817,6 +822,8 @@ async function processConversation(accountId, conversationId, contactId, contact
   };
 
   const usernameFromMsg = extractUsername(fullMessage);
+  const hasUsernameInMessage = Boolean(usernameFromMsg);
+
   if (!state.greeted && usernameFromMsg) {
     state.greeted = true;
     state.username = usernameFromMsg;
@@ -829,74 +836,97 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  if (isGanamosQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, `Los reembolsos diarios son solo en ${PLATFORM_URL}. La plataforma "ganamos" no aplica para reembolsos diarios.`);
-    markReplied();
-    return;
+  if (!hasUsernameInMessage) {
+    if (isGanamosQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, `Los reembolsos diarios son solo en ${PLATFORM_URL}. La plataforma "ganamos" no aplica para reembolsos diarios.`);
+      markReplied();
+      return;
+    }
+
+    if (isWeeklyRefundQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'El reembolso semanal se acredita lunes o martes y es aparte del reembolso diario. El diario se reclama por el día de ayer.');
+      markReplied();
+      return;
+    }
+
+    if (isPastLoadQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'El reembolso diario solo toma el día de ayer. Cargas de días anteriores no aplican; para próximas cargas, podés reclamar al día siguiente.');
+      markReplied();
+      return;
+    }
+
+    if (isTodayDepositQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'Si cargaste hoy, lo vas a ver reflejado mañana en cualquier horario.');
+      markReplied();
+      return;
+    }
+
+    if (isNetoQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'El neto de ayer es la suma de todas las cargas menos la suma de todos los retiros de ayer.');
+      markReplied();
+      return;
+    }
+
+    if (isLinkQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, `${PLATFORM_URL}`);
+      markReplied();
+      return;
+    }
+
+    if (isReintegroQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer (depósitos menos retiros), si ese neto es mayor a $1.');
+      markReplied();
+      return;
+    }
+
+    if (isComoSeCalculaQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'Se calcula con el neto de ayer: sumás cargas, restás retiros, y si da más de $1 se acredita el 8%.');
+      markReplied();
+      return;
+    }
+
+    if (isPorcentajeQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer.');
+      markReplied();
+      return;
+    }
+
+    if (isRequisitosQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'Necesito tu usuario. El reintegro es por ayer y se acredita si el neto es mayor a $1 y tu saldo actual es menor a $1000.');
+      markReplied();
+      return;
+    }
+
+    if (isComoReclamarQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'Para reclamar el reintegro solo pasame tu usuario y lo reviso.');
+      markReplied();
+      return;
+    }
+
+    if (isHorarioQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'El reintegro se reclama de 00:00 a 23:59 y corresponde al día de ayer.');
+      markReplied();
+      return;
+    }
   }
 
-  if (isWeeklyRefundQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'El reembolso semanal se acredita lunes o martes y es aparte del reembolso diario. El diario se reclama por el día de ayer.');
-    markReplied();
-    return;
-  }
-
-  if (isPastLoadQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'El reembolso diario solo toma el día de ayer. Cargas de días anteriores no aplican; para próximas cargas, podés reclamar al día siguiente.');
-    markReplied();
-    return;
-  }
-
-  if (isTodayDepositQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'Si cargaste hoy, lo vas a ver reflejado mañana en cualquier horario.');
-    markReplied();
-    return;
-  }
-
-  if (isNetoQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'El neto de ayer es la suma de todas las cargas menos la suma de todos los retiros de ayer.');
-    markReplied();
-    return;
-  }
-
-  if (isLinkQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, `${PLATFORM_URL}`);
-    markReplied();
-    return;
-  }
-
-  if (isReintegroQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer (depósitos menos retiros), si ese neto es mayor a $1.');
-    markReplied();
-    return;
-  }
-
-  if (isComoSeCalculaQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'Se calcula con el neto de ayer: sumás cargas, restás retiros, y si da más de $1 se acredita el 8%.');
-    markReplied();
-    return;
-  }
-
-  if (isPorcentajeQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer.');
-    markReplied();
-    return;
-  }
-
-  if (isRequisitosQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'Necesito tu usuario. El reintegro es por ayer y se acredita si el neto es mayor a $1 y tu saldo actual es menor a $1000.');
-    markReplied();
-    return;
-  }
-
-  if (isComoReclamarQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'Para reclamar el reintegro solo pasame tu usuario y lo reviso.');
-    markReplied();
-    return;
-  }
-
-  if (isHorarioQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, 'El reintegro se reclama de 00:00 a 23:59 y corresponde al día de ayer.');
+  if (isNetoAmountQuestion(fullMessage)) {
+    const activeUsername = state.username;
+    const usernameToCheck = activeUsername || usernameFromMsg;
+    if (!usernameToCheck) {
+      state.pendingIntent = 'neto';
+      await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario y te digo el neto de ayer.');
+      markReplied();
+      return;
+    }
+    const result = await getUserNetYesterday(usernameToCheck);
+    if (!result.success) {
+      state.lastReason = 'api_error';
+      await sendReplyToChatwoot(accountId, conversationId, 'No pude consultar eso ahora, probá en un rato.');
+      markReplied();
+      return;
+    }
+    await sendReplyToChatwoot(accountId, conversationId, `Tu neto de ayer fue $${result.net.toFixed(2)} (cargas $${result.totalDeposits.toFixed(2)} y retiros $${result.totalWithdraws.toFixed(2)}).`);
     markReplied();
     return;
   }
@@ -904,7 +934,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (isConfusedMessage(fullMessage) && state.lastReason) {
     let explain = 'Te explico: el reintegro se calcula por el día de ayer.';
     if (state.lastReason === 'balance_limit') {
-      explain = 'No corresponde reintegro si tu saldo actual supera $1000. Para que se acredite, tenés que tener menos de $1000.';
+      explain = 'Para que se acredite el reintegro, tu saldo al momento de pedirlo debe ser menor a $1000. Si es mayor, no se acredita.';
     } else if (state.lastReason === 'no_balance') {
       explain = 'Ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.';
     } else if (state.lastReason === 'claimed') {
@@ -926,7 +956,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (isExplanationQuestion(fullMessage) && state.lastReason) {
     let explain = 'Te explico: el reintegro se calcula por el día de ayer.';
     if (state.lastReason === 'balance_limit') {
-      explain = 'No corresponde reintegro si tu saldo actual supera $1000. Para que se acredite, tenés que tener menos de $1000.';
+      explain = 'Para que se acredite el reintegro, tu saldo al momento de pedirlo debe ser menor a $1000. Si es mayor, no se acredita.';
     } else if (state.lastReason === 'no_balance') {
       explain = 'Ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.';
     } else if (state.lastReason === 'claimed') {
@@ -984,7 +1014,7 @@ async function processConversation(accountId, conversationId, contactId, contact
       return;
     }
 
-    if (state.pendingIntent === 'transfers') {
+    if (state.pendingIntent === 'transfers' || state.pendingIntent === 'neto') {
       const result = await getUserNetYesterday(usernameToCheck);
       if (!result.success) {
         state.lastReason = 'api_error';
