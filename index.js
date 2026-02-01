@@ -655,6 +655,21 @@ function isTodayDepositQuestion(message) {
   return m.includes('cargue hoy') || m.includes('cargué hoy') || m.includes('deposite hoy') || m.includes('deposité hoy');
 }
 
+function isGanamosQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('ganamos');
+}
+
+function isWeeklyRefundQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('reembolso semanal') || m.includes('bono semanal') || m.includes('reintegro semanal') || m.includes('lunes') || m.includes('martes');
+}
+
+function isPastLoadQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('cargue ayer') || m.includes('cargué ayer') || m.includes('cargue antes') || m.includes('cargué antes') || m.includes('dias anteriores') || m.includes('días anteriores');
+}
+
 async function generateCasualChat(message, conversationId, context = {}) {
   try {
     await applyTypingDelay(message, conversationId);
@@ -666,7 +681,7 @@ async function generateCasualChat(message, conversationId, context = {}) {
       messages: [
         {
           role: 'system',
-          content: `Sos Camila, agente real de jugaygana (Argentina), atención 24 hs. Nunca digas que sos IA ni bot. Respuestas breves, humanas, con algun error de tipeo leve y natural. Si greeted=si, NO saludes ni te presentes de nuevo. Si el cliente pide explicación, respondé con el motivo usando last_reason (balance_limit, no_balance, claimed, user_not_found). Si falta el usuario para acreditar, pedilo. Si no recuerda su usuario, indicá que consulte al WhatsApp principal de su equipo. Reintegro: siempre por el día de ayer (00:00-23:59 AR). Cálculo: neto = depósitos - retiros, y el reintegro es 8% del neto si el neto es mayor a $1. Si el saldo actual supera $1000, no se acredita reintegro (debe tener menos de $1000). Si no podés ayudar, pedí que consulten al WhatsApp principal. Link: ${PLATFORM_URL}. Contexto: greeted=${greeted}, last_reason=${lastReason}.`
+          content: `Sos Camila, agente real de jugaygana (Argentina), atención 24 hs. Nunca digas que sos IA ni bot. Respuestas breves, humanas, con algun error de tipeo leve y natural. Si greeted=si, NO saludes ni te presentes de nuevo. Si el cliente pide explicación, respondé con el motivo usando last_reason (balance_limit, no_balance, claimed, user_not_found). Si falta el usuario para acreditar, pedilo. Si no recuerda su usuario, indicá que consulte al WhatsApp principal de su equipo. Reintegro: siempre por el día de ayer (00:00-23:59 AR). Cálculo: neto = depósitos - retiros, y el reintegro es 8% del neto si el neto es mayor a $1. Si el saldo actual supera $1000, no se acredita reintegro (debe tener menos de $1000). Solo trabajamos con ${PLATFORM_URL}. Si no podés ayudar, pedí que consulten al WhatsApp principal. Link: ${PLATFORM_URL}. Contexto: greeted=${greeted}, last_reason=${lastReason}.`
         },
         { role: 'user', content: message },
       ],
@@ -814,6 +829,24 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
+  if (isGanamosQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, `Los reembolsos diarios son solo en ${PLATFORM_URL}. La plataforma "ganamos" no aplica para reembolsos diarios.`);
+    markReplied();
+    return;
+  }
+
+  if (isWeeklyRefundQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'El reembolso semanal se acredita lunes o martes y es aparte del reembolso diario. El diario se reclama por el día de ayer.');
+    markReplied();
+    return;
+  }
+
+  if (isPastLoadQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'El reembolso diario solo toma el día de ayer. Cargas de días anteriores no aplican; para próximas cargas, podés reclamar al día siguiente.');
+    markReplied();
+    return;
+  }
+
   if (isTodayDepositQuestion(fullMessage)) {
     await sendReplyToChatwoot(accountId, conversationId, 'Si cargaste hoy, lo vas a ver reflejado mañana en cualquier horario.');
     markReplied();
@@ -827,7 +860,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   }
 
   if (isLinkQuestion(fullMessage)) {
-    await sendReplyToChatwoot(accountId, conversationId, `La web es ${PLATFORM_URL}.`);
+    await sendReplyToChatwoot(accountId, conversationId, `${PLATFORM_URL}`);
     markReplied();
     return;
   }
