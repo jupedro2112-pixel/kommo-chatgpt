@@ -275,6 +275,15 @@ function getArgentinaDateTime() {
   }).format(new Date());
 }
 
+function getArgentinaDateString() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+}
+
 // ================== GOOGLE SHEETS ==================
 async function appendBonusToSheet(username, amount) {
   try {
@@ -432,7 +441,7 @@ async function getUserNetYesterday(username) {
 // ================== RECLAMO HOY ==================
 async function checkClaimedToday(username) {
   const ok = await ensureSession();
-  if (!ok) return { success: false, error: 'No hay sesi��n válida' };
+  if (!ok) return { success: false, error: 'No hay sesión válida' };
 
   if (!SESSION_PARENT_ID) {
     return { success: false, error: 'No se pudo obtener Admin ID' };
@@ -526,9 +535,18 @@ async function creditUserBalance(username, amount) {
 async function sendReplyToChatwoot(accountId, conversationId, message) {
   if (!CHATWOOT_ACCESS_TOKEN) return;
   try {
+    const todayStr = getArgentinaDateString();
+    const state = userStates.get(conversationId);
+    let finalMessage = message;
+
+    if (state?.greetedDate === todayStr) {
+      const stripped = finalMessage.replace(/^hola[\s,!]+/i, '').trim();
+      if (stripped.length > 0) finalMessage = stripped;
+    }
+
     const url = `${CHATWOOT_BASE_URL}/api/v1/accounts/${accountId}/conversations/${conversationId}/messages`;
     await axios.post(url, {
-      content: message,
+      content: finalMessage,
       message_type: 'outgoing',
       private: false
     }, { headers: { 'api_access_token': CHATWOOT_ACCESS_TOKEN } });
@@ -675,6 +693,31 @@ function isPastLoadQuestion(message) {
   return m.includes('cargue ayer') || m.includes('cargué ayer') || m.includes('cargue antes') || m.includes('cargué antes') || m.includes('dias anteriores') || m.includes('días anteriores');
 }
 
+function isUsernameConfirmMessage(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('ese es mi usuario') || m.includes('ese es mi user') || m.includes('ese es mi usuario correcto') || m.includes('ese es mi usuario.');
+}
+
+function isWrongUsernameMessage(message) {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes('no es mi usuario') ||
+    m.includes('ese no es mi usuario') ||
+    m.includes('me equivoque') ||
+    m.includes('me equivoqué') ||
+    m.includes('usuario incorrecto') ||
+    m.includes('usuario mal') ||
+    m.includes('no es mi user') ||
+    m.includes('me confundi') ||
+    m.includes('me confundí') ||
+    m.includes('error mio') ||
+    m.includes('error mío') ||
+    m.includes('lo escribi mal') ||
+    m.includes('lo escribí mal')
+  );
+}
+
 async function generateCasualChat(message, conversationId, context = {}) {
   try {
     await applyTypingDelay(message, conversationId);
@@ -776,20 +819,6 @@ function extractUsername(message) {
   return null;
 }
 
-function isWrongUsernameMessage(message) {
-  if (!message) return false;
-  const m = message.toLowerCase();
-  return (
-    m.includes('no es mi usuario') ||
-    m.includes('ese no es mi usuario') ||
-    m.includes('me equivoque') ||
-    m.includes('me equivoqué') ||
-    m.includes('usuario incorrecto') ||
-    m.includes('usuario mal') ||
-    m.includes('no es mi user')
-  );
-}
-
 function isForgotUsernameMessage(message) {
   if (!message) return false;
   const m = message.toLowerCase();
@@ -811,12 +840,19 @@ function randomTempName() {
 async function processConversation(accountId, conversationId, contactId, contactName, fullMessage) {
   console.log(`🤖 Msg: "${fullMessage}" | Contact: "${contactName}"`);
 
-  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, lastReason: null, pendingIntent: null, lastActivity: Date.now() };
+  const todayStr = getArgentinaDateString();
+  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, pendingIntent: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
+
+  if (state.greetedDate !== todayStr) {
+    state.greeted = false;
+  }
+
   userStates.set(conversationId, state);
 
   const markReplied = () => {
     state.greeted = true;
+    state.greetedDate = todayStr;
     userStates.set(conversationId, state);
     firstReplyByConversation.set(conversationId, true);
   };
@@ -824,14 +860,43 @@ async function processConversation(accountId, conversationId, contactId, contact
   const usernameFromMsg = extractUsername(fullMessage);
   const hasUsernameInMessage = Boolean(usernameFromMsg);
 
+  if (usernameFromMsg && usernameFromMsg !== state.username) {
+    state.username = usernameFromMsg;
+    state.lastReason = null;
+    state.pendingIntent = null;
+    state.claimed = false;
+    userStates.set(conversationId, state);
+  }
+
   if (!state.greeted && usernameFromMsg) {
     state.greeted = true;
-    state.username = usernameFromMsg;
+    state.greetedDate = todayStr;
     userStates.set(conversationId, state);
   }
 
   if (!state.greeted) {
     await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
+    markReplied();
+    return;
+  }
+
+  if (isUsernameConfirmMessage(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Perfecto, ya tengo tu usuario. Decime si querés que revise el reembolso.');
+    markReplied();
+    return;
+  }
+
+  if (isWrongUsernameMessage(fullMessage)) {
+    state.username = null;
+    state.claimed = false;
+    state.lastReason = null;
+    state.pendingIntent = null;
+    userStates.set(conversationId, state);
+
+    const tempName = randomTempName();
+    await updateChatwootContact(accountId, contactId, tempName);
+
+    await sendReplyToChatwoot(accountId, conversationId, 'Entiendo, pasame tu usuario correcto y lo reviso.');
     markReplied();
     return;
   }
@@ -873,31 +938,31 @@ async function processConversation(accountId, conversationId, contactId, contact
       return;
     }
 
-    if (isReintegroQuestion(fullMessage)) {
+    if (!state.username && isReintegroQuestion(fullMessage)) {
       await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer (depósitos menos retiros), si ese neto es mayor a $1.');
       markReplied();
       return;
     }
 
-    if (isComoSeCalculaQuestion(fullMessage)) {
+    if (!state.username && isComoSeCalculaQuestion(fullMessage)) {
       await sendReplyToChatwoot(accountId, conversationId, 'Se calcula con el neto de ayer: sumás cargas, restás retiros, y si da más de $1 se acredita el 8%.');
       markReplied();
       return;
     }
 
-    if (isPorcentajeQuestion(fullMessage)) {
+    if (!state.username && isPorcentajeQuestion(fullMessage)) {
       await sendReplyToChatwoot(accountId, conversationId, 'El reintegro es del 8% del neto de ayer.');
       markReplied();
       return;
     }
 
-    if (isRequisitosQuestion(fullMessage)) {
+    if (!state.username && isRequisitosQuestion(fullMessage)) {
       await sendReplyToChatwoot(accountId, conversationId, 'Necesito tu usuario. El reintegro es por ayer y se acredita si el neto es mayor a $1 y tu saldo actual es menor a $1000.');
       markReplied();
       return;
     }
 
-    if (isComoReclamarQuestion(fullMessage)) {
+    if (!state.username && isComoReclamarQuestion(fullMessage)) {
       await sendReplyToChatwoot(accountId, conversationId, 'Para reclamar el reintegro solo pasame tu usuario y lo reviso.');
       markReplied();
       return;
@@ -911,8 +976,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   }
 
   if (isNetoAmountQuestion(fullMessage)) {
-    const activeUsername = state.username;
-    const usernameToCheck = activeUsername || usernameFromMsg;
+    const usernameToCheck = state.username || usernameFromMsg;
     if (!usernameToCheck) {
       state.pendingIntent = 'neto';
       await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario y te digo el neto de ayer.');
@@ -975,21 +1039,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  if (isWrongUsernameMessage(fullMessage)) {
-    state.username = null;
-    state.claimed = false;
-    state.lastReason = null;
-    state.pendingIntent = null;
-    userStates.set(conversationId, state);
-
-    const tempName = randomTempName();
-    await updateChatwootContact(accountId, contactId, tempName);
-
-    await sendReplyToChatwoot(accountId, conversationId, 'Entiendo, pasame tu usuario correcto para acreditarte el reintegro.');
-    markReplied();
-    return;
-  }
-
   let activeUsername = state.username;
   if (!activeUsername && isValidUsername(contactName)) {
     activeUsername = contactName.toLowerCase();
@@ -1004,6 +1053,7 @@ async function processConversation(accountId, conversationId, contactId, contact
       const userInfo = await getUserInfoByName(usernameToCheck);
       if (!userInfo) {
         state.lastReason = 'user_not_found';
+        state.username = null;
         await sendReplyToChatwoot(accountId, conversationId, 'No encuentro ese usuario. Revisalo con tu WhatsApp principal y pasamelo bien.');
         markReplied();
         return;
@@ -1044,6 +1094,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     const userInfo = await getUserInfoByName(usernameToCheck);
     if (!userInfo) {
       state.lastReason = 'user_not_found';
+      state.username = null;
       await sendReplyToChatwoot(accountId, conversationId, 'No encuentro ese usuario. Revisalo con tu WhatsApp principal y pasamelo bien.');
       markReplied();
       return;
@@ -1097,6 +1148,7 @@ async function processConversation(accountId, conversationId, contactId, contact
       const reply = await generateCheckResult(usernameToCheck, 'api_error', {}, conversationId);
       await sendReplyToChatwoot(accountId, conversationId, reply);
       state.lastReason = 'user_not_found';
+      state.username = null;
       userStates.set(conversationId, state);
       markReplied();
       return;
@@ -1152,7 +1204,7 @@ async function processConversation(accountId, conversationId, contactId, contact
       } else {
         const reply = await generateCheckResult(usernameToCheck, 'no_balance', { net }, conversationId);
         await sendReplyToChatwoot(accountId, conversationId, reply);
-        state.claimed = true;
+        state.claimed = false;
         state.username = usernameToCheck;
         state.lastReason = 'no_balance';
         userStates.set(conversationId, state);
