@@ -643,6 +643,26 @@ function isReintegroQuestion(message) {
   return m.includes('reintegro') || m.includes('reembolso');
 }
 
+function isCreditQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('me lo cargan') || m.includes('me lo acreditan') || m.includes('me lo cargás') || m.includes('me lo acreditás') || m.includes('me lo dan');
+}
+
+function isWhereRefundQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('donde veo') || m.includes('dónde veo') || m.includes('donde aparece') || m.includes('dónde aparece') || m.includes('a donde va') || m.includes('a dónde va');
+}
+
+function isHowProceedQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('como sigo') || m.includes('cómo sigo') || m.includes('como hago') || m.includes('cómo hago') || m.includes('como procedo') || m.includes('cómo procedo');
+}
+
+function isHelpQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('ayuda') || m.includes('necesito ayuda') || m.includes('no se que hacer') || m.includes('no sé que hacer');
+}
+
 function isComoSeCalculaQuestion(message) {
   const m = (message || '').toLowerCase();
   return m.includes('como se calcula') || m.includes('cómo se calcula') || m.includes('calculo del reintegro') || m.includes('calculo de reintegro');
@@ -926,6 +946,18 @@ async function processConversation(accountId, conversationId, contactId, contact
       return;
     }
 
+    if (isWhereRefundQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, `El reintegro se acredita en tu saldo de ${PLATFORM_URL}. Si corresponde, lo vas a ver en la cuenta apenas se procesa.`);
+      markReplied();
+      return;
+    }
+
+    if (isHowProceedQuestion(fullMessage) || isHelpQuestion(fullMessage)) {
+      await sendReplyToChatwoot(accountId, conversationId, 'Decime tu usuario y reviso si corresponde el reintegro de ayer. Si tenés otra duda, también te ayudo.');
+      markReplied();
+      return;
+    }
+
     if (isNetoQuestion(fullMessage)) {
       await sendReplyToChatwoot(accountId, conversationId, 'El neto de ayer es la suma de todas las cargas menos la suma de todos los retiros de ayer.');
       markReplied();
@@ -991,6 +1023,18 @@ async function processConversation(accountId, conversationId, contactId, contact
       return;
     }
     await sendReplyToChatwoot(accountId, conversationId, `Tu neto de ayer fue $${result.net.toFixed(2)} (cargas $${result.totalDeposits.toFixed(2)} y retiros $${result.totalWithdraws.toFixed(2)}).`);
+    markReplied();
+    return;
+  }
+
+  if (isCreditQuestion(fullMessage) && state.lastReason === 'no_balance') {
+    await sendReplyToChatwoot(accountId, conversationId, 'Hoy no corresponde reintegro por el neto de ayer. Podés volver mañana y consultar de nuevo.');
+    markReplied();
+    return;
+  }
+
+  if (isCreditQuestion(fullMessage) && state.lastReason === 'balance_limit') {
+    await sendReplyToChatwoot(accountId, conversationId, 'Para que se acredite, tu saldo al momento de pedirlo debe ser menor a $1000. Si es mayor, no se acredita.');
     markReplied();
     return;
   }
