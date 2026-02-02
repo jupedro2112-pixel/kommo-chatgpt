@@ -49,6 +49,8 @@ const REPEAT_REASON_TYPES = new Set([
   'user_not_found',
 ]);
 
+const MESSAGE_BUFFER_DELAY_MS = 5000;
+
 if (!PLATFORM_USER || !PLATFORM_PASS) {
   console.log("⚠️ PLATFORM_USER / PLATFORM_PASS no definidos. Se usará FIXED_API_TOKEN si existe.");
 }
@@ -1419,7 +1421,7 @@ app.post('/webhook-chatwoot', (req, res) => {
       console.log(`⏳ Procesando... (Conv ${conversationId})`);
       await processConversation(accountId, conversationId, contactId, contactName, fullText);
     })();
-  }, 5000);
+  }, MESSAGE_BUFFER_DELAY_MS);
 });
 
 app.listen(PORT, () => console.log(`🚀 Bot (Token Fresco) Activo en puerto ${PORT}`));
