@@ -681,6 +681,11 @@ async function applyTypingDelay(text, conversationId) {
   if (conversationId) firstReplyByConversation.set(conversationId, true);
 }
 
+function isAffirmativeMessage(message) {
+  const m = (message || '').trim().toLowerCase();
+  return ['si', 'sí', 'dale', 'ok', 'oki', 'okey', 'de una', 'por favor', 'pasame', 'pasame por favor', 'pasamelo', 'pasa', 'mandame', 'mandamelo'].includes(m);
+}
+
 function isNameQuestion(message) {
   const m = (message || '').toLowerCase();
   return (
@@ -821,7 +826,20 @@ function isWithdrawQuestion(message) {
 
 function isWhatsAppRequest(message) {
   const m = (message || '').toLowerCase();
-  return m.includes('whatsapp') || m.includes('wpp') || m.includes('numero principal') || m.includes('número principal') || m.includes('linea principal') || m.includes('línea principal') || m.includes('numero de contacto') || m.includes('número de contacto') || m.includes('whatsapp activo');
+  return m.includes('whatsapp') ||
+    m.includes('whatsap') ||
+    m.includes('whatapp') ||
+    m.includes('what ap') ||
+    m.includes('whats app') ||
+    m.includes('wpp') ||
+    m.includes('numero principal') ||
+    m.includes('número principal') ||
+    m.includes('linea principal') ||
+    m.includes('línea principal') ||
+    m.includes('numero de contacto') ||
+    m.includes('número de contacto') ||
+    m.includes('whatsapp activo') ||
+    m.includes('link para entrar a mi what ap');
 }
 
 function isCommunityRequest(message) {
@@ -1031,6 +1049,21 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (!state.greeted) {
     await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
+    markReplied();
+    return;
+  }
+
+  // Contexto: ofreció WhatsApp tras acreditar
+  if (state.pendingIntent === 'whatsapp' && (isAffirmativeMessage(fullMessage) || isWhatsAppRequest(fullMessage))) {
+    if (!state.team) {
+      await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío el WhatsApp principal.');
+      markReplied();
+      return;
+    }
+    const contacts = formatTeamContacts(state.team);
+    await sendReplyToChatwoot(accountId, conversationId, `Líneas principales ${state.team}:\n${contacts.whatsappLines}`);
+    state.pendingIntent = null;
+    userStates.set(conversationId, state);
     markReplied();
     return;
   }
@@ -1423,6 +1456,7 @@ async function processConversation(accountId, conversationId, contactId, contact
           state.claimed = true;
           state.username = usernameToCheck;
           state.lastReason = 'success';
+          state.pendingIntent = 'whatsapp';
           userStates.set(conversationId, state);
           markReplied();
         } else {
