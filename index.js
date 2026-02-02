@@ -864,7 +864,7 @@ function extractUsername(message) {
   const normalized = normalizeUsernameValue(raw);
   const teamMatch = normalized.match(TEAM_USER_PATTERN);
   if (teamMatch) return teamMatch[0].toLowerCase();
-  const explicit = /usuario\s*:?\s*@?([a-z0-9._-]+)/i.exec(normalized);
+  const explicit = /(?:usuario|user)(?:es)?\s*:?\s*@?([a-z0-9._-]+)/i.exec(normalized);
   if (explicit) return explicit[1].toLowerCase();
   const genericMatch = normalized.match(/[a-z]{3,}\d{3,}/i);
   if (genericMatch) return genericMatch[0].toLowerCase();
