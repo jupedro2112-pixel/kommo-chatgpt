@@ -580,6 +580,15 @@ async function applyTypingDelay(text, conversationId) {
   if (conversationId) firstReplyByConversation.set(conversationId, true);
 }
 
+function normalizeUsernameValue(text) {
+  return (text || '')
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase();
+}
+
 function isNameQuestion(message) {
   const m = (message || '').toLowerCase();
   return (
@@ -762,9 +771,15 @@ async function generateCasualChat(message, conversationId, context = {}) {
 }
 
 async function generateCheckResult(username, status, data = {}, conversationId) {
+  if (status === 'success') {
+    const bonusText = Number(data.bonus || 0).toFixed(2);
+    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}. Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
+    await applyTypingDelay(successMessage, conversationId);
+    return successMessage;
+  }
+
   let systemPrompt = `Sos Camila, agente real de jugaygana. Usuario: "${username}". Respuesta breve, humana, con algun error de tipeo leve. Nunca digas que sos IA ni bot. Link: ${PLATFORM_URL}.`;
-  if (status === 'success') systemPrompt += ` Reintegro de ayer acreditado por $${data.bonus}. Decí que ya puede verlo en la plataforma.`;
-  else if (status === 'api_error') systemPrompt += ` No pude encontrar el usuario o hubo un error al consultarlo. Pedí que corrobore su usuario con el WhatsApp principal y que lo envíe bien para acreditar el reintegro.`;
+  if (status === 'api_error') systemPrompt += ` No pude encontrar el usuario o hubo un error al consultarlo. Pedí que corrobore su usuario con el WhatsApp principal y que lo envíe bien para acreditar el reintegro.`;
   else if (status === 'no_balance') systemPrompt += ` Hoy no corresponde reintegro porque ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.`;
   else if (status === 'claimed') systemPrompt += ` Ya fue reclamado hoy.`;
 
@@ -783,7 +798,7 @@ async function generateCheckResult(username, status, data = {}, conversationId) 
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
     await applyTypingDelay(delaySeed, conversationId);
-    return status === 'success' ? `Listo, ya lo tenés acreditado.` : 'No se pudo procesar, probá más tarde.';
+    return 'No se pudo procesar, probá más tarde.';
   }
 }
 
@@ -820,22 +835,22 @@ const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._
 
 function isValidUsername(text) {
   if (!text) return false;
-  if (TEAM_USER_PATTERN.test(text)) return true;
-  if (/[a-z]+\d{3,}$/i.test(text)) return true;
+  const normalized = normalizeUsernameValue(text);
+  if (TEAM_USER_PATTERN.test(normalized)) return true;
+  if (/[a-z]+\d{3,}$/i.test(normalized)) return true;
   return false;
 }
 
 function extractUsername(message) {
   if (!message) return null;
-  const m = message.trim();
-  const teamMatch = m.match(TEAM_USER_PATTERN);
+  const raw = message.trim();
+  const normalized = normalizeUsernameValue(raw);
+  const teamMatch = normalized.match(TEAM_USER_PATTERN);
   if (teamMatch) return teamMatch[0].toLowerCase();
-  const explicit = /usuario\s*:?\s*@?([a-zA-Z0-9._-]+)/i.exec(m);
+  const explicit = /usuario\s*:?\s*@?([a-z0-9._-]+)/i.exec(normalized);
   if (explicit) return explicit[1].toLowerCase();
-  const STOPWORDS = new Set(['mi','usuario','es','soy','hola','gracias','quiero','reclamar','reembolso','bono','buenas','tardes','noches','tengo','plata','carga']);
-  const tokens = m.split(/[\s,;:]+/).filter(t => t.length >= 4 && !STOPWORDS.has(t.toLowerCase()));
-  const withNumbers = tokens.find(t => /\d/.test(t));
-  if (withNumbers) return withNumbers.toLowerCase();
+  const genericMatch = normalized.match(/[a-z]{3,}\d{3,}/i);
+  if (genericMatch) return genericMatch[0].toLowerCase();
   return null;
 }
 
@@ -1085,7 +1100,7 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   let activeUsername = state.username;
   if (!activeUsername && isValidUsername(contactName)) {
-    activeUsername = contactName.toLowerCase();
+    activeUsername = normalizeUsernameValue(contactName);
     state.username = activeUsername;
     userStates.set(conversationId, state);
   }
