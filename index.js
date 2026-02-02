@@ -722,6 +722,11 @@ function isPastLoadQuestion(message) {
   return m.includes('cargue ayer') || m.includes('cargué ayer') || m.includes('cargue antes') || m.includes('cargué antes') || m.includes('dias anteriores') || m.includes('días anteriores');
 }
 
+function isWithdrawQuestion(message) {
+  const m = (message || '').toLowerCase();
+  return m.includes('retiro') || m.includes('retirar') || m.includes('sacar') || m.includes('extraer') || m.includes('cobrar') || m.includes('cobro');
+}
+
 function isUsernameConfirmMessage(message) {
   const m = (message || '').toLowerCase();
   return m.includes('ese es mi usuario') || m.includes('ese es mi user') || m.includes('ese es mi usuario correcto') || m.includes('ese es mi usuario.');
@@ -773,7 +778,7 @@ async function generateCasualChat(message, conversationId, context = {}) {
 async function generateCheckResult(username, status, data = {}, conversationId) {
   if (status === 'success') {
     const bonusText = Number(data.bonus || 0).toFixed(2);
-    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}! Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
+    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}. Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
     await applyTypingDelay(successMessage, conversationId);
     return successMessage;
   }
@@ -911,6 +916,12 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (!state.greeted) {
     await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
+    markReplied();
+    return;
+  }
+
+  if (isWithdrawQuestion(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Los retiros (normales o de reembolso) se gestionan por el WhatsApp principal de tu equipo. Acá solo hacemos cargas de reembolsos.');
     markReplied();
     return;
   }
