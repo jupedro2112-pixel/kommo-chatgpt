@@ -419,61 +419,79 @@ async function getUserInfoByName(targetUsername) {
   const ok = await ensureSession();
   if (!ok) return null;
 
-  try {
-    const body = toFormUrlEncoded({
-      action: 'ShowUsers',
-      token: SESSION_TOKEN,
-      page: 1,
-      pagesize: 50,
-      viewtype: 'tree',
-      username: targetUsername,
-      showhidden: 'false',
-      parentid: SESSION_PARENT_ID || undefined
-    });
+  const maxAttempts = 3;
 
-    const headers2 = {};
-    if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const body = toFormUrlEncoded({
+        action: 'ShowUsers',
+        token: SESSION_TOKEN,
+        page: 1,
+        pagesize: 50,
+        viewtype: 'tree',
+        username: targetUsername,
+        showhidden: 'false',
+        parentid: SESSION_PARENT_ID || undefined
+      });
 
-    const resp = await client.post('', body, {
-      headers: headers2,
-      validateStatus: () => true,
-      maxRedirects: 0
-    });
+      const headers2 = {};
+      if (SESSION_COOKIE) headers2['Cookie'] = SESSION_COOKIE;
 
-    let data = resp.data;
-    if (typeof data === 'string') {
-      try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
-    }
+      const resp = await client.post('', body, {
+        headers: headers2,
+        validateStatus: () => true,
+        maxRedirects: 0
+      });
 
-    if (typeof data === 'string' && data.trim().startsWith('<')) {
-      logBlockedHtml('ShowUsers', data);
-      return null;
-    }
-
-    const list = data.users || data.data || (Array.isArray(data) ? data : []);
-    const normalizedTarget = normalizeUsernameValue(targetUsername);
-    const found = list.find(u => normalizeUsernameValue(u.user_name) === normalizedTarget);
-
-    if (found && found.user_id) {
-      let balanceRaw = found.user_balance ?? found.balance ?? found.balance_amount ?? found.available_balance ?? 0;
-      balanceRaw = Number(balanceRaw || 0);
-
-      // Corrección: si viene como entero, se interpreta como centavos
-      let balancePesos = balanceRaw;
-      if (Number.isInteger(balanceRaw)) {
-        balancePesos = balanceRaw / 100;
+      let data = resp.data;
+      if (typeof data === 'string') {
+        try { data = JSON.parse(data.substring(data.indexOf('{'), data.lastIndexOf('}') + 1)); } catch (e) {}
       }
 
-      console.log(`✅ [API] ID encontrado: ${found.user_id} | Balance: ${balancePesos}`);
-      return { id: found.user_id, balance: balancePesos };
-    }
+      if (typeof data === 'string' && data.trim().startsWith('<')) {
+        logBlockedHtml('ShowUsers', data);
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 400));
+          continue;
+        }
+        return null;
+      }
 
-    console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
-    return null;
-  } catch (err) {
-    console.error("❌ [API] Error Búsqueda:", err.message);
-    return null;
+      const list = data.users || data.data || (Array.isArray(data) ? data : []);
+      const normalizedTarget = normalizeUsernameValue(targetUsername);
+      const found = list.find(u => normalizeUsernameValue(u.user_name) === normalizedTarget);
+
+      if (found && found.user_id) {
+        let balanceRaw = found.user_balance ?? found.balance ?? found.balance_amount ?? found.available_balance ?? 0;
+        balanceRaw = Number(balanceRaw || 0);
+
+        let balancePesos = balanceRaw;
+        if (Number.isInteger(balanceRaw)) {
+          balancePesos = balanceRaw / 100;
+        }
+
+        console.log(`✅ [API] ID encontrado: ${found.user_id} | Balance: ${balancePesos}`);
+        return { id: found.user_id, balance: balancePesos };
+      }
+
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        continue;
+      }
+
+      console.error(`❌ [API] Usuario no encontrado. Lista recibida: ${list.length}`);
+      return null;
+    } catch (err) {
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        continue;
+      }
+      console.error("❌ [API] Error Búsqueda:", err.message);
+      return null;
+    }
   }
+
+  return null;
 }
 
 // ================== TRANSFERENCIAS (AYER) ==================
