@@ -773,7 +773,7 @@ async function generateCasualChat(message, conversationId, context = {}) {
 async function generateCheckResult(username, status, data = {}, conversationId) {
   if (status === 'success') {
     const bonusText = Number(data.bonus || 0).toFixed(2);
-    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}. Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
+    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}! Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
     await applyTypingDelay(successMessage, conversationId);
     return successMessage;
   }
