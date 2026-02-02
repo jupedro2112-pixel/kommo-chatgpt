@@ -124,6 +124,19 @@ const TEAM_CONFIG = {
   }
 };
 
+const TEAM_NAME_KEYS = [
+  { key: 'TRIBET', name: 'tribet' },
+  { key: 'IGNITE', name: 'ignite' },
+  { key: 'TIGER', name: 'tiger' },
+  { key: 'ROYAL', name: 'royal' },
+  { key: 'ARGENTUM', name: 'argentum' },
+  { key: 'MARSHALL', name: 'marshall' },
+  { key: 'BIG', name: 'big' },
+  { key: 'LUXOR', name: 'luxor' },
+  { key: 'META', name: 'meta' },
+  { key: 'CIRCA', name: 'circa' }
+];
+
 // Limpieza memoria
 setInterval(() => {
   const now = Date.now();
@@ -377,6 +390,51 @@ function normalizeUsernameValue(text) {
     .toLowerCase();
 }
 
+function normalizeTeamToken(text) {
+  return normalizeUsernameValue(text).replace(/[^a-z]/g, '');
+}
+
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  const matrix = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return matrix[a.length][b.length];
+}
+
+function fuzzyTeamMatch(token) {
+  const normalized = normalizeTeamToken(token);
+  if (!normalized) return null;
+
+  for (const team of TEAM_NAME_KEYS) {
+    if (normalized === team.name) return team.key;
+  }
+
+  for (const team of TEAM_NAME_KEYS) {
+    const maxDistance = team.name.length <= 5 ? 1 : 2;
+    if (levenshtein(normalized, team.name) <= maxDistance) {
+      return team.key;
+    }
+  }
+
+  return null;
+}
+
 function detectTeamByUsername(username) {
   const normalized = normalizeUsernameValue(username);
   for (const [teamKey, config] of Object.entries(TEAM_CONFIG)) {
@@ -388,17 +446,25 @@ function detectTeamByUsername(username) {
 }
 
 function detectTeamByMessage(message) {
-  const m = normalizeUsernameValue(message);
-  if (m.includes('tribet')) return 'TRIBET';
-  if (m.includes('ignite')) return 'IGNITE';
-  if (m.includes('tiger')) return 'TIGER';
-  if (m.includes('royal')) return 'ROYAL';
-  if (m.includes('argentum')) return 'ARGENTUM';
-  if (m.includes('marshall')) return 'MARSHALL';
-  if (m.includes('big')) return 'BIG';
-  if (m.includes('luxor')) return 'LUXOR';
-  if (m.includes('meta') || m.includes('met')) return 'META';
-  if (m.includes('circa')) return 'CIRCA';
+  const normalizedMessage = normalizeUsernameValue(message);
+  for (const team of TEAM_NAME_KEYS) {
+    if (normalizedMessage.includes(team.name)) {
+      return team.key;
+    }
+  }
+
+  const tokens = normalizeTeamToken(message).split(/[^a-z]+/).filter(Boolean);
+  for (const token of tokens) {
+    const match = fuzzyTeamMatch(token);
+    if (match) return match;
+  }
+
+  const rawTokens = (message || '').split(/\s+/).filter(Boolean);
+  for (const raw of rawTokens) {
+    const match = fuzzyTeamMatch(raw);
+    if (match) return match;
+  }
+
   return null;
 }
 
@@ -465,6 +531,7 @@ async function getUserInfoByName(targetUsername) {
         let balanceRaw = found.user_balance ?? found.balance ?? found.balance_amount ?? found.available_balance ?? 0;
         balanceRaw = Number(balanceRaw || 0);
 
+        // Corrección: si viene como entero, se interpreta como centavos
         let balancePesos = balanceRaw;
         if (Number.isInteger(balanceRaw)) {
           balancePesos = balanceRaw / 100;
@@ -850,13 +917,21 @@ function isWhatsAppRequest(message) {
     m.includes('what ap') ||
     m.includes('whats app') ||
     m.includes('wpp') ||
+    m.includes('wsp') ||
+    m.includes('wp') ||
+    m.includes('wts') ||
     m.includes('numero principal') ||
     m.includes('número principal') ||
     m.includes('linea principal') ||
     m.includes('línea principal') ||
-    m.includes('numero de contacto') ||
-    m.includes('número de contacto') ||
+    m.includes('linea') ||
+    m.includes('línea') ||
+    m.includes('numero') ||
+    m.includes('número') ||
+    m.includes('contacto') ||
     m.includes('whatsapp activo') ||
+    m.includes('linea activa') ||
+    m.includes('línea activa') ||
     m.includes('link para entrar a mi what ap');
 }
 
@@ -1072,7 +1147,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   }
 
   // Contexto: ofreció WhatsApp tras acreditar
-  if (state.pendingIntent === 'whatsapp' && (isAffirmativeMessage(fullMessage) || isWhatsAppRequest(fullMessage))) {
+  if (state.pendingIntent === 'whatsapp' && (isAffirmativeMessage(fullMessage) || isWhatsAppRequest(fullMessage) || teamFromMessage)) {
     if (!state.team) {
       await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío el WhatsApp principal.');
       markReplied();
@@ -1131,7 +1206,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  if (isWhatsAppRequest(fullMessage)) {
+  if (isWhatsAppRequest(fullMessage) || teamFromMessage) {
     if (!state.team) {
       await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío el WhatsApp principal.');
       markReplied();
