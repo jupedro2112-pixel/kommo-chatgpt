@@ -39,6 +39,16 @@ const TOKEN_TTL_MINUTES = parseInt(process.env.TOKEN_TTL_MINUTES || '20', 10);
 // Proxy
 const PROXY_URL = process.env.PROXY_URL;
 
+const REPEAT_REASON_WINDOW_MS = 2 * 60 * 1000;
+const REPEAT_REASON_TYPES = new Set([
+  'no_balance',
+  'negative_net',
+  'no_deposits',
+  'balance_limit',
+  'claimed',
+  'user_not_found',
+]);
+
 if (!PLATFORM_USER || !PLATFORM_PASS) {
   console.log("⚠️ PLATFORM_USER / PLATFORM_PASS no definidos. Se usará FIXED_API_TOKEN si existe.");
 }
@@ -912,7 +922,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   console.log(`🤖 Msg: "${fullMessage}" | Contact: "${contactName}"`);
 
   const todayStr = getArgentinaDateString();
-  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, pendingIntent: null, lastActivity: Date.now() };
+  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, lastReasonNotified: null, lastReasonNotifiedAt: 0, pendingIntent: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
 
   if (state.greetedDate !== todayStr) {
@@ -928,12 +938,21 @@ async function processConversation(accountId, conversationId, contactId, contact
     firstReplyByConversation.set(conversationId, true);
   };
 
+  const markReasonNotified = (reason) => {
+    state.lastReason = reason;
+    state.lastReasonNotified = reason;
+    state.lastReasonNotifiedAt = Date.now();
+    userStates.set(conversationId, state);
+  };
+
   const usernameFromMsg = extractUsername(fullMessage);
   const hasUsernameInMessage = Boolean(usernameFromMsg);
 
   if (usernameFromMsg && usernameFromMsg !== state.username) {
     state.username = usernameFromMsg;
     state.lastReason = null;
+    state.lastReasonNotified = null;
+    state.lastReasonNotifiedAt = 0;
     state.pendingIntent = null;
     state.claimed = false;
     userStates.set(conversationId, state);
@@ -955,6 +974,24 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
+  if (
+    state.lastReasonNotified &&
+    REPEAT_REASON_TYPES.has(state.lastReasonNotified) &&
+    state.lastReasonNotifiedAt &&
+    Date.now() - state.lastReasonNotifiedAt < REPEAT_REASON_WINDOW_MS &&
+    !hasUsernameInMessage &&
+    !isExplanationQuestion(fullMessage) &&
+    !isConfusedMessage(fullMessage) &&
+    !isCreditQuestion(fullMessage) &&
+    !isHowProceedQuestion(fullMessage) &&
+    !isHelpQuestion(fullMessage) &&
+    !isNetoAmountQuestion(fullMessage) &&
+    !isBalanceQuestion(fullMessage) &&
+    !isYesterdayTransfersQuestion(fullMessage)
+  ) {
+    return;
+  }
+
   if (isWithdrawQuestion(fullMessage)) {
     await sendReplyToChatwoot(accountId, conversationId, 'Los retiros (normales o de reembolso) se gestionan por el WhatsApp principal de tu equipo. Acá solo hacemos cargas de reembolsos.');
     markReplied();
@@ -971,6 +1008,8 @@ async function processConversation(accountId, conversationId, contactId, contact
     state.username = null;
     state.claimed = false;
     state.lastReason = null;
+    state.lastReasonNotified = null;
+    state.lastReasonNotifiedAt = 0;
     state.pendingIntent = null;
     userStates.set(conversationId, state);
 
@@ -1090,12 +1129,14 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (isCreditQuestion(fullMessage) && state.lastReason === 'no_balance') {
     await sendReplyToChatwoot(accountId, conversationId, 'Hoy no corresponde reintegro por el neto de ayer. Podés volver mañana y consultar de nuevo.');
+    markReasonNotified('no_balance');
     markReplied();
     return;
   }
 
   if (isCreditQuestion(fullMessage) && state.lastReason === 'balance_limit') {
     await sendReplyToChatwoot(accountId, conversationId, 'Para que se acredite, tu saldo al momento de pedirlo debe ser menor a $1000. Si es mayor, no se acredita.');
+    markReasonNotified('balance_limit');
     markReplied();
     return;
   }
@@ -1157,9 +1198,9 @@ async function processConversation(accountId, conversationId, contactId, contact
     if (state.pendingIntent === 'balance') {
       const userInfo = await getUserInfoByName(usernameToCheck);
       if (!userInfo) {
-        state.lastReason = 'user_not_found';
         state.username = null;
         await sendReplyToChatwoot(accountId, conversationId, 'No encuentro ese usuario. Revisalo con tu WhatsApp principal y pasamelo bien.');
+        markReasonNotified('user_not_found');
         markReplied();
         return;
       }
@@ -1198,9 +1239,9 @@ async function processConversation(accountId, conversationId, contactId, contact
 
     const userInfo = await getUserInfoByName(usernameToCheck);
     if (!userInfo) {
-      state.lastReason = 'user_not_found';
       state.username = null;
       await sendReplyToChatwoot(accountId, conversationId, 'No encuentro ese usuario. Revisalo con tu WhatsApp principal y pasamelo bien.');
+      markReasonNotified('user_not_found');
       markReplied();
       return;
     }
@@ -1252,17 +1293,15 @@ async function processConversation(accountId, conversationId, contactId, contact
     if (!userInfo) {
       const reply = await generateCheckResult(usernameToCheck, 'api_error', {}, conversationId);
       await sendReplyToChatwoot(accountId, conversationId, reply);
-      state.lastReason = 'user_not_found';
       state.username = null;
-      userStates.set(conversationId, state);
+      markReasonNotified('user_not_found');
       markReplied();
       return;
     }
 
     if (userInfo.balance >= 1000) {
       await sendReplyToChatwoot(accountId, conversationId, 'Tu saldo actual supera $1000, por eso no aplica el reintegro automático.');
-      state.lastReason = 'balance_limit';
-      userStates.set(conversationId, state);
+      markReasonNotified('balance_limit');
       markReplied();
       return;
     }
@@ -1279,8 +1318,7 @@ async function processConversation(accountId, conversationId, contactId, contact
           await sendReplyToChatwoot(accountId, conversationId, reply);
           state.claimed = true;
           state.username = usernameToCheck;
-          state.lastReason = 'claimed';
-          userStates.set(conversationId, state);
+          markReasonNotified('claimed');
           markReplied();
           return;
         }
@@ -1311,32 +1349,28 @@ async function processConversation(accountId, conversationId, contactId, contact
         await sendReplyToChatwoot(accountId, conversationId, reply);
         state.claimed = false;
         state.username = usernameToCheck;
-        state.lastReason = 'no_deposits';
-        userStates.set(conversationId, state);
+        markReasonNotified('no_deposits');
         markReplied();
       } else if (result.totalDeposits === 0 && result.totalWithdraws > 0) {
         const reply = await generateCheckResult(usernameToCheck, 'negative_net', { net }, conversationId);
         await sendReplyToChatwoot(accountId, conversationId, reply);
         state.claimed = false;
         state.username = usernameToCheck;
-        state.lastReason = 'negative_net';
-        userStates.set(conversationId, state);
+        markReasonNotified('negative_net');
         markReplied();
       } else if (net < 0) {
         const reply = await generateCheckResult(usernameToCheck, 'negative_net', { net }, conversationId);
         await sendReplyToChatwoot(accountId, conversationId, reply);
         state.claimed = false;
         state.username = usernameToCheck;
-        state.lastReason = 'negative_net';
-        userStates.set(conversationId, state);
+        markReasonNotified('negative_net');
         markReplied();
       } else {
         const reply = await generateCheckResult(usernameToCheck, 'no_balance', { net }, conversationId);
         await sendReplyToChatwoot(accountId, conversationId, reply);
         state.claimed = false;
         state.username = usernameToCheck;
-        state.lastReason = 'no_balance';
-        userStates.set(conversationId, state);
+        markReasonNotified('no_balance');
         markReplied();
       }
     } else {
