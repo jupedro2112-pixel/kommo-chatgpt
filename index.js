@@ -927,7 +927,11 @@ async function processConversation(accountId, conversationId, contactId, contact
   }
 
   if (!state.greeted) {
-    await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
+    await sendReplyToChatwoot(
+      accountId,
+      conversationId,
+      '🤖 ¡Hola! Soy tu asistente de reembolsos. 🎮\n\nPara reclamar tu reembolso, ten en cuenta:\n\n1️⃣ Solo pueden reclamar clientes activos que jugaron ayer y tuvieron pérdidas.\n2️⃣ El reembolso es un reintegro por las pérdidas. Si ganaste, no podrás retirar el monto diario. 💸\n\n🔑 Por favor, ingresa tu usuario para verificar si eres elegible para el reembolso. 👇'
+    );
     markReplied();
     return;
   }
@@ -1359,7 +1363,7 @@ app.post('/webhook-chatwoot', (req, res) => {
     const fullText = buffer.messages.join(" . ");
     messageBuffer.delete(conversationId);
     (async () => {
-      console.log(`�� Procesando... (Conv ${conversationId})`);
+      console.log(`⏳ Procesando... (Conv ${conversationId})`);
       await processConversation(accountId, conversationId, contactId, contactName, fullText);
     })();
   }, 3000);
