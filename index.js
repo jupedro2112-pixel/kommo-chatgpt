@@ -70,60 +70,6 @@ const auth = GOOGLE_CREDENTIALS
 const messageBuffer = new Map();
 const userStates = new Map();
 
-// ================== EQUIPOS ==================
-const TEAM_CONFIG = {
-  TRIBET: {
-    prefixes: ['tri'],
-    whatsapp: ['https://wa.me/+593969325404'],
-    community: 'https://chat.whatsapp.com/IYl1AqtVj8GCdhSePterNZ?mode=wwt'
-  },
-  IGNITE: {
-    prefixes: ['ignite'],
-    whatsapp: ['https://wa.me/+559284484325'],
-    community: 'https://chat.whatsapp.com/BnglHneMwsw40c58JtaF7h'
-  },
-  TIGER: {
-    prefixes: ['tiger'],
-    whatsapp: ['https://wa.me/+5511982112416', 'https://wa.me/+584248501476'],
-    community: 'https://chat.whatsapp.com/KfrPfJCt9WGK1zzzkTtmrx'
-  },
-  ROYAL: {
-    prefixes: ['royal'],
-    whatsapp: ['https://wa.me/+573003263912'],
-    community: 'https://chat.whatsapp.com/C9Wk2U2dA8H1WfHWwTqV7G'
-  },
-  ARGENTUM: {
-    prefixes: ['argen'],
-    whatsapp: ['https://wa.me/+573124234193', 'https://wa.me/+5493812166573'],
-    community: 'https://chat.whatsapp.com/CbJouVYa8mPLPzbXihx62z'
-  },
-  MARSHALL: {
-    prefixes: ['mar'],
-    whatsapp: ['https://wa.me/+5491123037148', 'https://wa.me/+393335818343'],
-    community: 'https://chat.whatsapp.com/CmwMfiAOi8vC0wNm1JMrJ1'
-  },
-  BIG: {
-    prefixes: ['big'],
-    whatsapp: [],
-    community: ''
-  },
-  LUXOR: {
-    prefixes: ['lux'],
-    whatsapp: [],
-    community: ''
-  },
-  META: {
-    prefixes: ['met'],
-    whatsapp: [],
-    community: ''
-  },
-  CIRCA: {
-    prefixes: ['cir'],
-    whatsapp: [],
-    community: ''
-  }
-};
-
 // Limpieza memoria
 setInterval(() => {
   const now = Date.now();
@@ -366,52 +312,6 @@ async function appendBonusToSheet(username, amount) {
   }
 }
 
-// ================== EQUIPOS HELPERS ==================
-function normalizeUsernameValue(text) {
-  return (text || '')
-    .toString()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, '')
-    .replace(/[^a-z0-9._-]/gi, '')
-    .toLowerCase();
-}
-
-function detectTeamByUsername(username) {
-  const normalized = normalizeUsernameValue(username);
-  for (const [teamKey, config] of Object.entries(TEAM_CONFIG)) {
-    if (config.prefixes.some(prefix => normalized.startsWith(prefix))) {
-      return teamKey;
-    }
-  }
-  return null;
-}
-
-function detectTeamByMessage(message) {
-  const m = normalizeUsernameValue(message);
-  if (m.includes('tribet')) return 'TRIBET';
-  if (m.includes('ignite')) return 'IGNITE';
-  if (m.includes('tiger')) return 'TIGER';
-  if (m.includes('royal')) return 'ROYAL';
-  if (m.includes('argentum')) return 'ARGENTUM';
-  if (m.includes('marshall')) return 'MARSHALL';
-  if (m.includes('big')) return 'BIG';
-  if (m.includes('luxor')) return 'LUXOR';
-  if (m.includes('meta') || m.includes('met')) return 'META';
-  if (m.includes('circa')) return 'CIRCA';
-  return null;
-}
-
-function formatTeamContacts(teamKey) {
-  const team = TEAM_CONFIG[teamKey];
-  if (!team) return null;
-  const whatsappLines = team.whatsapp && team.whatsapp.length
-    ? team.whatsapp.map((line, idx) => `${idx + 1}- ${line}`).join('\n')
-    : 'Por ahora no hay líneas principales.';
-  const communityLink = team.community ? team.community : 'Por ahora no hay comunidad.';
-  return { whatsappLines, communityLink };
-}
-
 // ================== USUARIO ==================
 async function getUserInfoByName(targetUsername) {
   console.log(`🔎 [API] Buscando usuario: ${targetUsername}...`);
@@ -451,8 +351,7 @@ async function getUserInfoByName(targetUsername) {
     }
 
     const list = data.users || data.data || (Array.isArray(data) ? data : []);
-    const normalizedTarget = normalizeUsernameValue(targetUsername);
-    const found = list.find(u => normalizeUsernameValue(u.user_name) === normalizedTarget);
+    const found = list.find(u => String(u.user_name).toLowerCase().trim() === String(targetUsername).toLowerCase().trim());
 
     if (found && found.user_id) {
       let balanceRaw = found.user_balance ?? found.balance ?? found.balance_amount ?? found.available_balance ?? 0;
@@ -681,9 +580,13 @@ async function applyTypingDelay(text, conversationId) {
   if (conversationId) firstReplyByConversation.set(conversationId, true);
 }
 
-function isAffirmativeMessage(message) {
-  const m = (message || '').trim().toLowerCase();
-  return ['si', 'sí', 'dale', 'ok', 'oki', 'okey', 'de una', 'por favor', 'pasame', 'pasame por favor', 'pasamelo', 'pasa', 'mandame', 'mandamelo'].includes(m);
+function normalizeUsernameValue(text) {
+  return (text || '')
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase();
 }
 
 function isNameQuestion(message) {
@@ -824,34 +727,6 @@ function isWithdrawQuestion(message) {
   return m.includes('retiro') || m.includes('retirar') || m.includes('sacar') || m.includes('extraer') || m.includes('cobrar') || m.includes('cobro');
 }
 
-function isWhatsAppRequest(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('whatsapp') ||
-    m.includes('whatsap') ||
-    m.includes('whatapp') ||
-    m.includes('what ap') ||
-    m.includes('whats app') ||
-    m.includes('wpp') ||
-    m.includes('numero principal') ||
-    m.includes('número principal') ||
-    m.includes('linea principal') ||
-    m.includes('línea principal') ||
-    m.includes('numero de contacto') ||
-    m.includes('número de contacto') ||
-    m.includes('whatsapp activo') ||
-    m.includes('link para entrar a mi what ap');
-}
-
-function isCommunityRequest(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('comunidad') || m.includes('grupo') || m.includes('link de comunidad') || m.includes('link de grupo') || m.includes('invitacion') || m.includes('invitación');
-}
-
-function isNotInCommunityMessage(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('no estoy en la comunidad') || m.includes('no estoy en el grupo') || m.includes('no tengo comunidad') || m.includes('no estoy en el grupo');
-}
-
 function isUsernameConfirmMessage(message) {
   const m = (message || '').toLowerCase();
   return m.includes('ese es mi usuario') || m.includes('ese es mi user') || m.includes('ese es mi usuario correcto') || m.includes('ese es mi usuario.');
@@ -903,7 +778,7 @@ async function generateCasualChat(message, conversationId, context = {}) {
 async function generateCheckResult(username, status, data = {}, conversationId) {
   if (status === 'success') {
     const bonusText = Number(data.bonus || 0).toFixed(2);
-    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}. Ya lo podés ver en la plataforma ${PLATFORM_URL}! Si querés, puedo pasarte la línea de WhatsApp activa de tu equipo. ¡Suerte!`;
+    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}. Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
     await applyTypingDelay(successMessage, conversationId);
     return successMessage;
   }
@@ -911,7 +786,6 @@ async function generateCheckResult(username, status, data = {}, conversationId) 
   let systemPrompt = `Sos Camila, agente real de jugaygana. Usuario: "${username}". Respuesta breve, humana, con algun error de tipeo leve. Nunca digas que sos IA ni bot. Link: ${PLATFORM_URL}.`;
   if (status === 'api_error') systemPrompt += ` No pude encontrar el usuario o hubo un error al consultarlo. Pedí que corrobore su usuario con el WhatsApp principal y que lo envíe bien para acreditar el reintegro.`;
   else if (status === 'no_balance') systemPrompt += ` Hoy no corresponde reintegro porque ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.`;
-  else if (status === 'negative_net') systemPrompt += ` Hoy no corresponde reintegro porque ayer retiraste más de lo que depositaste, el total quedó negativo. Podés volver mañana y consultar de nuevo.`;
   else if (status === 'claimed') systemPrompt += ` Ya fue reclamado hoy.`;
 
   const delaySeed = `${status} ${data?.bonus || ''}`;
@@ -1007,7 +881,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   console.log(`🤖 Msg: "${fullMessage}" | Contact: "${contactName}"`);
 
   const todayStr = getArgentinaDateString();
-  let state = userStates.get(conversationId) || { claimed: false, username: null, team: null, greeted: false, greetedDate: null, lastReason: null, pendingIntent: null, lastActivity: Date.now() };
+  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, pendingIntent: null, lastActivity: Date.now() };
   state.lastActivity = Date.now();
 
   if (state.greetedDate !== todayStr) {
@@ -1028,16 +902,9 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (usernameFromMsg && usernameFromMsg !== state.username) {
     state.username = usernameFromMsg;
-    state.team = detectTeamByUsername(usernameFromMsg);
     state.lastReason = null;
     state.pendingIntent = null;
     state.claimed = false;
-    userStates.set(conversationId, state);
-  }
-
-  const teamFromMessage = detectTeamByMessage(fullMessage);
-  if (teamFromMessage && teamFromMessage !== state.team) {
-    state.team = teamFromMessage;
     userStates.set(conversationId, state);
   }
 
@@ -1049,21 +916,6 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (!state.greeted) {
     await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
-    markReplied();
-    return;
-  }
-
-  // Contexto: ofreció WhatsApp tras acreditar
-  if (state.pendingIntent === 'whatsapp' && (isAffirmativeMessage(fullMessage) || isWhatsAppRequest(fullMessage))) {
-    if (!state.team) {
-      await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío el WhatsApp principal.');
-      markReplied();
-      return;
-    }
-    const contacts = formatTeamContacts(state.team);
-    await sendReplyToChatwoot(accountId, conversationId, `Líneas principales ${state.team}:\n${contacts.whatsappLines}`);
-    state.pendingIntent = null;
-    userStates.set(conversationId, state);
     markReplied();
     return;
   }
@@ -1082,7 +934,6 @@ async function processConversation(accountId, conversationId, contactId, contact
 
   if (isWrongUsernameMessage(fullMessage)) {
     state.username = null;
-    state.team = null;
     state.claimed = false;
     state.lastReason = null;
     state.pendingIntent = null;
@@ -1092,40 +943,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     await updateChatwootContact(accountId, contactId, tempName);
 
     await sendReplyToChatwoot(accountId, conversationId, 'Entiendo, pasame tu usuario correcto y lo reviso.');
-    markReplied();
-    return;
-  }
-
-  if (isNotInCommunityMessage(fullMessage) || isCommunityRequest(fullMessage)) {
-    if (!state.team) {
-      await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío la comunidad correcta.');
-      markReplied();
-      return;
-    }
-    const contacts = formatTeamContacts(state.team);
-    if (!contacts) {
-      await sendReplyToChatwoot(accountId, conversationId, 'No encuentro el equipo. Pasame tu usuario o el nombre del equipo.');
-      markReplied();
-      return;
-    }
-    await sendReplyToChatwoot(accountId, conversationId, `Comunidad ${state.team}: ${contacts.communityLink}`);
-    markReplied();
-    return;
-  }
-
-  if (isWhatsAppRequest(fullMessage)) {
-    if (!state.team) {
-      await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío el WhatsApp principal.');
-      markReplied();
-      return;
-    }
-    const contacts = formatTeamContacts(state.team);
-    if (!contacts) {
-      await sendReplyToChatwoot(accountId, conversationId, 'No encuentro el equipo. Pasame tu usuario o el nombre del equipo.');
-      markReplied();
-      return;
-    }
-    await sendReplyToChatwoot(accountId, conversationId, `Líneas principales ${state.team}:\n${contacts.whatsappLines}`);
     markReplied();
     return;
   }
@@ -1242,12 +1059,6 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  if (isCreditQuestion(fullMessage) && state.lastReason === 'negative_net') {
-    await sendReplyToChatwoot(accountId, conversationId, 'Hoy no corresponde reintegro porque ayer retiraste más de lo que depositaste, el total quedó negativo.');
-    markReplied();
-    return;
-  }
-
   if (isCreditQuestion(fullMessage) && state.lastReason === 'balance_limit') {
     await sendReplyToChatwoot(accountId, conversationId, 'Para que se acredite, tu saldo al momento de pedirlo debe ser menor a $1000. Si es mayor, no se acredita.');
     markReplied();
@@ -1260,8 +1071,6 @@ async function processConversation(accountId, conversationId, contactId, contact
       explain = 'Para que se acredite el reintegro, tu saldo al momento de pedirlo debe ser menor a $1000. Si es mayor, no se acredita.';
     } else if (state.lastReason === 'no_balance') {
       explain = 'Ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.';
-    } else if (state.lastReason === 'negative_net') {
-      explain = 'Ayer retiraste más de lo que depositaste, el total quedó negativo. Por eso no corresponde reintegro.';
     } else if (state.lastReason === 'claimed') {
       explain = 'Ya lo reclamaste hoy. Mañana podés volver a pedirlo.';
     } else if (state.lastReason === 'user_not_found') {
@@ -1284,8 +1093,6 @@ async function processConversation(accountId, conversationId, contactId, contact
       explain = 'Para que se acredite el reintegro, tu saldo al momento de pedirlo debe ser menor a $1000. Si es mayor, no se acredita.';
     } else if (state.lastReason === 'no_balance') {
       explain = 'Ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.';
-    } else if (state.lastReason === 'negative_net') {
-      explain = 'Ayer retiraste más de lo que depositaste, el total quedó negativo. Por eso no corresponde reintegro.';
     } else if (state.lastReason === 'claimed') {
       explain = 'Ya lo reclamaste hoy. Mañana podés volver a pedirlo.';
     } else if (state.lastReason === 'user_not_found') {
@@ -1306,7 +1113,6 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (!activeUsername && isValidUsername(contactName)) {
     activeUsername = normalizeUsernameValue(contactName);
     state.username = activeUsername;
-    state.team = detectTeamByUsername(activeUsername);
     userStates.set(conversationId, state);
   }
 
@@ -1456,7 +1262,6 @@ async function processConversation(accountId, conversationId, contactId, contact
           state.claimed = true;
           state.username = usernameToCheck;
           state.lastReason = 'success';
-          state.pendingIntent = 'whatsapp';
           userStates.set(conversationId, state);
           markReplied();
         } else {
@@ -1466,14 +1271,6 @@ async function processConversation(accountId, conversationId, contactId, contact
           userStates.set(conversationId, state);
           markReplied();
         }
-      } else if (net <= 0) {
-        const reply = await generateCheckResult(usernameToCheck, 'negative_net', { net }, conversationId);
-        await sendReplyToChatwoot(accountId, conversationId, reply);
-        state.claimed = false;
-        state.username = usernameToCheck;
-        state.lastReason = 'negative_net';
-        userStates.set(conversationId, state);
-        markReplied();
       } else {
         const reply = await generateCheckResult(usernameToCheck, 'no_balance', { net }, conversationId);
         await sendReplyToChatwoot(accountId, conversationId, reply);
@@ -1529,7 +1326,7 @@ app.post('/webhook-chatwoot', (req, res) => {
       console.log(`⏳ Procesando... (Conv ${conversationId})`);
       await processConversation(accountId, conversationId, contactId, contactName, fullText);
     })();
-  }, 5000);
+  }, 3000);
 });
 
 app.listen(PORT, () => console.log(`🚀 Bot (Token Fresco) Activo en puerto ${PORT}`));
