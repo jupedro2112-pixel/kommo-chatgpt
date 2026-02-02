@@ -783,6 +783,18 @@ async function generateCheckResult(username, status, data = {}, conversationId) 
     return successMessage;
   }
 
+  if (status === 'negative_net') {
+    const msg = `${username}, hoy no corresponde reintegro porque ayer retiraste más de lo que depositaste, así que el total quedó negativo. Podés volver mañana y consultar de nuevo. Si tenés alguna duda, estoy acá para ayudarte. ¡Saludos!`;
+    await applyTypingDelay(msg, conversationId);
+    return msg;
+  }
+
+  if (status === 'no_deposits') {
+    const msg = `${username}, hoy no corresponde reintegro porque no hubo ninguna carga el día de ayer, y el reembolso es específicamente sobre el día de ayer. Podés volver mañana y consultar de nuevo. Si tenés alguna duda, estoy acá para ayudarte. ¡Saludos!`;
+    await applyTypingDelay(msg, conversationId);
+    return msg;
+  }
+
   let systemPrompt = `Sos Camila, agente real de jugaygana. Usuario: "${username}". Respuesta breve, humana, con algun error de tipeo leve. Nunca digas que sos IA ni bot. Link: ${PLATFORM_URL}.`;
   if (status === 'api_error') systemPrompt += ` No pude encontrar el usuario o hubo un error al consultarlo. Pedí que corrobore su usuario con el WhatsApp principal y que lo envíe bien para acreditar el reintegro.`;
   else if (status === 'no_balance') systemPrompt += ` Hoy no corresponde reintegro porque ayer no hubo cargas/retiros o el neto no alcanzó. Podés volver mañana y consultar de nuevo.`;
@@ -1271,6 +1283,30 @@ async function processConversation(accountId, conversationId, contactId, contact
           userStates.set(conversationId, state);
           markReplied();
         }
+      } else if (result.totalDeposits === 0 && result.totalWithdraws === 0) {
+        const reply = await generateCheckResult(usernameToCheck, 'no_deposits', { net }, conversationId);
+        await sendReplyToChatwoot(accountId, conversationId, reply);
+        state.claimed = false;
+        state.username = usernameToCheck;
+        state.lastReason = 'no_deposits';
+        userStates.set(conversationId, state);
+        markReplied();
+      } else if (result.totalDeposits === 0 && result.totalWithdraws > 0) {
+        const reply = await generateCheckResult(usernameToCheck, 'negative_net', { net }, conversationId);
+        await sendReplyToChatwoot(accountId, conversationId, reply);
+        state.claimed = false;
+        state.username = usernameToCheck;
+        state.lastReason = 'negative_net';
+        userStates.set(conversationId, state);
+        markReplied();
+      } else if (net < 0) {
+        const reply = await generateCheckResult(usernameToCheck, 'negative_net', { net }, conversationId);
+        await sendReplyToChatwoot(accountId, conversationId, reply);
+        state.claimed = false;
+        state.username = usernameToCheck;
+        state.lastReason = 'negative_net';
+        userStates.set(conversationId, state);
+        markReplied();
       } else {
         const reply = await generateCheckResult(usernameToCheck, 'no_balance', { net }, conversationId);
         await sendReplyToChatwoot(accountId, conversationId, reply);
@@ -1323,7 +1359,7 @@ app.post('/webhook-chatwoot', (req, res) => {
     const fullText = buffer.messages.join(" . ");
     messageBuffer.delete(conversationId);
     (async () => {
-      console.log(`⏳ Procesando... (Conv ${conversationId})`);
+      console.log(`�� Procesando... (Conv ${conversationId})`);
       await processConversation(accountId, conversationId, contactId, contactName, fullText);
     })();
   }, 3000);
