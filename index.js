@@ -135,7 +135,7 @@ const TEAM_NAME_KEYS = [
   { key: 'LUXOR', name: 'luxor' },
   { key: 'META', name: 'meta' },
   { key: 'CIRCA', name: 'circa' }
-];
+};
 
 // Limpieza memoria
 setInterval(() => {
@@ -771,6 +771,27 @@ function isAffirmativeMessage(message) {
   return ['si', 'sí', 'dale', 'ok', 'oki', 'okey', 'de una', 'por favor', 'pasame', 'pasame por favor', 'pasamelo', 'pasa', 'mandame', 'mandamelo'].includes(m);
 }
 
+function isActionIntentMessage(message) {
+  return (
+    isReintegroQuestion(message) ||
+    isWhatsAppRequest(message) ||
+    isCommunityRequest(message) ||
+    isBalanceQuestion(message) ||
+    isNetoQuestion(message) ||
+    isNetoAmountQuestion(message) ||
+    isYesterdayTransfersQuestion(message) ||
+    isWithdrawQuestion(message)
+  );
+}
+
+function isBareUsernameMessage(message, username) {
+  if (!username) return false;
+  const normalizedMessage = normalizeUsernameValue(message);
+  const normalizedUser = normalizeUsernameValue(username);
+  if (!normalizedMessage.includes(normalizedUser)) return false;
+  return !isActionIntentMessage(message);
+}
+
 function isNameQuestion(message) {
   const m = (message || '').toLowerCase();
   return (
@@ -1144,6 +1165,57 @@ async function processConversation(accountId, conversationId, contactId, contact
     await sendReplyToChatwoot(accountId, conversationId, 'Hola! soy Cami 🙂 Para acreditar el reembolso de ayer necesito tu usuario. El reintegro es automático y se calcula con el neto de ayer. Pasame tu usuario y lo reviso.');
     markReplied();
     return;
+  }
+
+  if (isBareUsernameMessage(fullMessage, usernameFromMsg)) {
+    await sendReplyToChatwoot(
+      accountId,
+      conversationId,
+      'Perfecto. ¿Querés que revise si tenés reembolso, querés la línea principal o el link de la comunidad?'
+    );
+    state.pendingIntent = 'choose_action';
+    userStates.set(conversationId, state);
+    markReplied();
+    return;
+  }
+
+  if (state.pendingIntent === 'choose_action') {
+    if (isReintegroQuestion(fullMessage)) {
+      state.pendingIntent = null;
+      userStates.set(conversationId, state);
+    } else if (isWhatsAppRequest(fullMessage) || teamFromMessage) {
+      state.pendingIntent = null;
+      if (!state.team) {
+        await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío el WhatsApp principal.');
+        markReplied();
+        return;
+      }
+      const contacts = formatTeamContacts(state.team);
+      await sendReplyToChatwoot(accountId, conversationId, `Líneas principales ${state.team}:\n${contacts.whatsappLines}`);
+      userStates.set(conversationId, state);
+      markReplied();
+      return;
+    } else if (isCommunityRequest(fullMessage)) {
+      state.pendingIntent = null;
+      if (!state.team) {
+        await sendReplyToChatwoot(accountId, conversationId, 'Pasame tu usuario o el nombre del equipo y te envío la comunidad correcta.');
+        markReplied();
+        return;
+      }
+      const contacts = formatTeamContacts(state.team);
+      await sendReplyToChatwoot(accountId, conversationId, `Comunidad ${state.team}: ${contacts.communityLink}`);
+      userStates.set(conversationId, state);
+      markReplied();
+      return;
+    } else {
+      await sendReplyToChatwoot(
+        accountId,
+        conversationId,
+        'Decime si querés: 1) revisar reembolso, 2) línea principal, o 3) link de comunidad.'
+      );
+      markReplied();
+      return;
+    }
   }
 
   // Contexto: ofreció WhatsApp tras acreditar
