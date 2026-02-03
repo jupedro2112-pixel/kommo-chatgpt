@@ -358,14 +358,16 @@ async function ensureSession() {
 }
 
 // ================== FECHAS ARGENTINA ==================
+const AR_TIMEZONE = 'America/Argentina/Buenos_Aires';
+
 const DATE_FMT_AR = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'America/Argentina/Buenos_Aires',
+  timeZone: AR_TIMEZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
 });
 const DATE_TIME_FMT_AR = new Intl.DateTimeFormat('es-AR', {
-  timeZone: 'America/Argentina/Buenos_Aires',
+  timeZone: AR_TIMEZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -383,30 +385,48 @@ function getDatePartsArgentina(date = new Date()) {
   };
 }
 
-function getYesterdayRangeArgentinaEpoch() {
-  const { yyyy, mm, dd } = getDatePartsArgentina();
-  const todayLocal = new Date(`${yyyy}-${mm}-${dd}T00:00:00-03:00`);
-  const yesterdayLocal = new Date(todayLocal.getTime() - 24 * 60 * 60 * 1000);
-  const yparts = getDatePartsArgentina(yesterdayLocal);
+function getTimeZoneOffsetMinutes(timeZone, date) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    timeZoneName: 'shortOffset',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const parts = fmt.formatToParts(date);
+  const tzName = parts.find((p) => p.type === 'timeZoneName')?.value || 'GMT';
+  const match = tzName.match(/GMT([+-]\d{1,2})(?::(\d{2}))?/);
+  if (!match) return 0;
+  const sign = match[1].startsWith('-') ? -1 : 1;
+  const hours = Math.abs(parseInt(match[1], 10));
+  const minutes = match[2] ? parseInt(match[2], 10) : 0;
+  return sign * (hours * 60 + minutes);
+}
 
-  const from = new Date(`${yparts.yyyy}-${yparts.mm}-${yparts.dd}T00:00:00-03:00`);
-  const to = new Date(`${yparts.yyyy}-${yparts.mm}-${yparts.dd}T23:59:59-03:00`);
+function getArgentinaDayRangeEpoch(dayOffset = 0) {
+  const { yyyy, mm, dd } = getDatePartsArgentina();
+  const baseUtc = new Date(Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd), 0, 0, 0));
+  const targetUtc = new Date(baseUtc.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+  const offsetMinutes = getTimeZoneOffsetMinutes(AR_TIMEZONE, targetUtc);
+
+  const fromUtcMs = targetUtc.getTime() - offsetMinutes * 60 * 1000;
+  const toUtcMs = fromUtcMs + 24 * 60 * 60 * 1000 - 1000;
 
   return {
-    fromEpoch: Math.floor(from.getTime() / 1000),
-    toEpoch: Math.floor(to.getTime() / 1000),
+    fromEpoch: Math.floor(fromUtcMs / 1000),
+    toEpoch: Math.floor(toUtcMs / 1000),
   };
 }
 
-function getTodayRangeArgentinaEpoch() {
-  const { yyyy, mm, dd } = getDatePartsArgentina();
-  const from = new Date(`${yyyy}-${mm}-${dd}T00:00:00-03:00`);
-  const to = new Date(`${yyyy}-${mm}-${dd}T23:59:59-03:00`);
+function getYesterdayRangeArgentinaEpoch() {
+  return getArgentinaDayRangeEpoch(-1);
+}
 
-  return {
-    fromEpoch: Math.floor(from.getTime() / 1000),
-    toEpoch: Math.floor(to.getTime() / 1000),
-  };
+function getTodayRangeArgentinaEpoch() {
+  return getArgentinaDayRangeEpoch(0);
 }
 
 function getArgentinaDateTime() {
