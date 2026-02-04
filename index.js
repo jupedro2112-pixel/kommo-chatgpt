@@ -613,12 +613,20 @@ async function applyTypingDelay(text, conversationId) {
   if (conversationId) firstReplyByConversation.set(conversationId, true);
 }
 
-function normalizeUsernameValue(text) {
+function normalizeIntentText(text) {
   return (text || '')
     .toString()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9._-]/gi, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9% ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeUsernameValue(text) {
+  return (text || '')
+    .toString()
     .replace(/\s+/g, '')
     .toLowerCase();
 }
@@ -641,165 +649,182 @@ function extractUsername(message) {
 }
 
 function isNameQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   return (
     m.includes('tu nombre') ||
     m.includes('como te llamas') ||
-    m.includes('cómo te llamas') ||
-    m.includes('quien sos') ||
-    m.includes('quién sos')
+    m.includes('quien sos')
   );
 }
 
 function isBalanceQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   return (
     m.includes('saldo') ||
     m.includes('cuanto tengo') ||
-    m.includes('cuánto tengo') ||
-    m.includes('cuanto saldo') ||
-    m.includes('cuánto saldo')
+    m.includes('cuanto saldo')
+  );
+}
+
+function isLowBalanceComplaint(message) {
+  const m = normalizeIntentText(message);
+  return (
+    m.includes('saldo poco') ||
+    m.includes('saldo bajo') ||
+    m.includes('poco saldo') ||
+    m.includes('saldo es poco')
+  );
+}
+
+function isClosingMessage(message) {
+  const m = normalizeIntentText(message);
+  return (
+    m.includes('gracias') ||
+    m.includes('muchas gracias') ||
+    m.includes('ok gracias') ||
+    m.includes('listo gracias') ||
+    m.includes('listo') ||
+    m.includes('chau') ||
+    m.includes('chao') ||
+    m.includes('adios') ||
+    m.includes('hasta luego') ||
+    m.includes('hasta la proxima') ||
+    m.includes('nos vemos')
   );
 }
 
 function isYesterdayTransfersQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   const asksTransfers = m.includes('carga') || m.includes('deposit') || m.includes('retiro') || m.includes('movim');
   return m.includes('ayer') && asksTransfers;
 }
 
 function isNetoQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('neto') && (m.includes('que es') || m.includes('qué es') || m.includes('que seria') || m.includes('qué sería') || m.includes('explica'));
+  const m = normalizeIntentText(message);
+  return m.includes('neto') && (m.includes('que es') || m.includes('que seria') || m.includes('explica'));
 }
 
 function isNetoAmountQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('cuanto es el neto') || m.includes('cuánto es el neto') || m.includes('cuanto neto') || m.includes('cuánto neto');
+  const m = normalizeIntentText(message);
+  return m.includes('cuanto es el neto') || m.includes('cuanto neto');
 }
 
 function isExplanationQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   return (
     m.includes('por que') ||
-    m.includes('por qué') ||
     m.includes('porque') ||
     m.includes('como seria') ||
-    m.includes('cómo sería') ||
     m.includes('explica') ||
     m.includes('explicame')
   );
 }
 
 function isConfusedMessage(message) {
-  const m = (message || '').trim().toLowerCase();
+  const m = normalizeIntentText(message);
   if (!m) return false;
-  if (m.length <= 4 && /[\?\!]/.test(m)) return true;
+  if (m.length <= 4 && /[\?\!]/.test(message || '')) return true;
   return m.includes('no entiendo') || m.includes('??') || m.includes('???');
 }
 
 function isReintegroQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   return m.includes('reintegro') || m.includes('reembolso');
 }
 
 function isCreditQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('me lo cargan') || m.includes('me lo acreditan') || m.includes('me lo cargás') || m.includes('me lo acreditás') || m.includes('me lo dan');
+  const m = normalizeIntentText(message);
+  return m.includes('me lo cargan') || m.includes('me lo acreditan') || m.includes('me lo dan');
 }
 
 function isWhereRefundQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('donde veo') || m.includes('dónde veo') || m.includes('donde aparece') || m.includes('dónde aparece') || m.includes('a donde va') || m.includes('a dónde va');
+  const m = normalizeIntentText(message);
+  return m.includes('donde veo') || m.includes('donde aparece') || m.includes('a donde va');
 }
 
 function isHowProceedQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('como sigo') || m.includes('cómo sigo') || m.includes('como hago') || m.includes('cómo hago') || m.includes('como procedo') || m.includes('cómo procedo');
+  const m = normalizeIntentText(message);
+  return m.includes('como sigo') || m.includes('como hago') || m.includes('como procedo');
 }
 
 function isHelpQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('ayuda') || m.includes('necesito ayuda') || m.includes('no se que hacer') || m.includes('no sé que hacer');
+  const m = normalizeIntentText(message);
+  return m.includes('ayuda') || m.includes('necesito ayuda') || m.includes('no se que hacer');
 }
 
 function isComoSeCalculaQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('como se calcula') || m.includes('cómo se calcula') || m.includes('calculo del reintegro') || m.includes('calculo de reintegro');
+  const m = normalizeIntentText(message);
+  return m.includes('como se calcula') || m.includes('calculo del reintegro') || m.includes('calculo de reintegro');
 }
 
 function isHorarioQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('horario') || m.includes('hasta que hora') || m.includes('hasta qué hora') || m.includes('a que hora') || m.includes('a qué hora');
+  const m = normalizeIntentText(message);
+  return m.includes('horario') || m.includes('hasta que hora') || m.includes('a que hora');
 }
 
 function isRequisitosQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('requisitos') || m.includes('condiciones') || m.includes('que necesito') || m.includes('qué necesito');
+  const m = normalizeIntentText(message);
+  return m.includes('requisitos') || m.includes('condiciones') || m.includes('que necesito');
 }
 
 function isLinkQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('link') || m.includes('pagina') || m.includes('página') || m.includes('url') || m.includes('web');
+  const m = normalizeIntentText(message);
+  return m.includes('link') || m.includes('pagina') || m.includes('url') || m.includes('web');
 }
 
 function isPorcentajeQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   return m.includes('porcentaje') || m.includes('8%') || m.includes('ocho por ciento');
 }
 
 function isComoReclamarQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('como reclamo') || m.includes('cómo reclamo') || m.includes('como pedir') || m.includes('cómo pedir') || m.includes('reclamar reintegro');
+  const m = normalizeIntentText(message);
+  return m.includes('como reclamo') || m.includes('como pedir') || m.includes('reclamar reintegro');
 }
 
 function isTodayDepositQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('cargue hoy') || m.includes('cargué hoy') || m.includes('deposite hoy') || m.includes('deposité hoy');
+  const m = normalizeIntentText(message);
+  return m.includes('cargue hoy') || m.includes('deposite hoy');
 }
 
 function isGanamosQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   return m.includes('ganamos');
 }
 
 function isWeeklyRefundQuestion(message) {
-  const m = (message || '').toLowerCase();
+  const m = normalizeIntentText(message);
   return m.includes('reembolso semanal') || m.includes('bono semanal') || m.includes('reintegro semanal') || m.includes('lunes') || m.includes('martes');
 }
 
 function isPastLoadQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('cargue ayer') || m.includes('cargué ayer') || m.includes('cargue antes') || m.includes('cargué antes') || m.includes('dias anteriores') || m.includes('días anteriores');
+  const m = normalizeIntentText(message);
+  return m.includes('cargue ayer') || m.includes('cargue antes') || m.includes('dias anteriores');
 }
 
 function isWithdrawQuestion(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('retiro') || m.includes('retirar') || m.includes('sacar') || m.includes('extraer') || m.includes('cobrar') || m.includes('cobro');
+  const m = normalizeIntentText(message);
+  return m.includes('retiro') || m.includes('retirar') || m.includes('sacar') || m.includes('extraer') || m.includes('cobrar');
 }
 
 function isUsernameConfirmMessage(message) {
-  const m = (message || '').toLowerCase();
-  return m.includes('ese es mi usuario') || m.includes('ese es mi user') || m.includes('ese es mi usuario correcto') || m.includes('ese es mi usuario.');
+  const m = normalizeIntentText(message);
+  return m.includes('ese es mi usuario') || m.includes('ese es mi user') || m.includes('ese es mi usuario correcto');
 }
 
 function isWrongUsernameMessage(message) {
   if (!message) return false;
-  const m = message.toLowerCase();
+  const m = normalizeIntentText(message);
   return (
     m.includes('no es mi usuario') ||
     m.includes('ese no es mi usuario') ||
     m.includes('me equivoque') ||
-    m.includes('me equivoqué') ||
     m.includes('usuario incorrecto') ||
     m.includes('usuario mal') ||
     m.includes('no es mi user') ||
     m.includes('me confundi') ||
-    m.includes('me confundí') ||
     m.includes('error mio') ||
-    m.includes('error mío') ||
-    m.includes('lo escribi mal') ||
-    m.includes('lo escribí mal')
+    m.includes('lo escribi mal')
   );
 }
 
@@ -911,14 +936,12 @@ function isValidUsername(text) {
 
 function isForgotUsernameMessage(message) {
   if (!message) return false;
-  const m = message.toLowerCase();
+  const m = normalizeIntentText(message);
   return (
     m.includes('no recuerdo mi usuario') ||
     m.includes('no me acuerdo mi usuario') ||
     m.includes('olvide mi usuario') ||
-    m.includes('olvidé mi usuario') ||
-    m.includes('no se mi usuario') ||
-    m.includes('no sé mi usuario')
+    m.includes('no se mi usuario')
   );
 }
 
@@ -931,7 +954,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   console.log(`🤖 Msg: "${fullMessage}" | Contact: "${contactName}"`);
 
   const todayStr = getArgentinaDateString();
-  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, lastReasonNotified: null, lastReasonNotifiedAt: 0, pendingIntent: null, lastActivity: Date.now() };
+  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, lastReasonNotified: null, lastReasonNotifiedAt: 0, pendingIntent: null, lastActivity: Date.now(), closed: false };
   state.lastActivity = Date.now();
 
   if (state.greetedDate !== todayStr) {
@@ -957,6 +980,18 @@ async function processConversation(accountId, conversationId, contactId, contact
   const usernameFromMsg = extractUsername(fullMessage);
   const hasUsernameInMessage = Boolean(usernameFromMsg);
 
+  if (state.closed) {
+    return;
+  }
+
+  if (isClosingMessage(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'Gracias! Cualquier cosa, hablá con tu WhatsApp principal. 🙌');
+    state.closed = true;
+    userStates.set(conversationId, state);
+    markReplied();
+    return;
+  }
+
   if (usernameFromMsg && usernameFromMsg !== state.username) {
     state.username = usernameFromMsg;
     state.lastReason = null;
@@ -979,6 +1014,12 @@ async function processConversation(accountId, conversationId, contactId, contact
       conversationId,
       '🤖 ¡Hola! Soy tu asistente de reembolsos. 🎮\n\nPara reclamar tu reembolso, ten en cuenta:\n\n1️⃣ Solo pueden reclamar clientes activos que jugaron ayer y tuvieron pérdidas.\n2️⃣ El reembolso es un reintegro por las pérdidas. Si ganaste, no podrás retirar el monto diario. 💸\n\n🔑 Por favor, ingresa tu usuario para verificar si eres elegible para el reembolso. 👇'
     );
+    markReplied();
+    return;
+  }
+
+  if (isLowBalanceComplaint(fullMessage)) {
+    await sendReplyToChatwoot(accountId, conversationId, 'El reembolso se calcula en base a los depósitos y retiros del día anterior.');
     markReplied();
     return;
   }
