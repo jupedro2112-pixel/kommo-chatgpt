@@ -51,6 +51,8 @@ const REPEAT_REASON_TYPES = new Set([
 
 const MESSAGE_BUFFER_DELAY_MS = 5000;
 
+const FALLBACK_HELP_MESSAGE = 'Para cualquier consulta, hablá con el agente en tu WhatsApp principal.';
+
 if (!PLATFORM_USER || !PLATFORM_PASS) {
   console.log("⚠️ PLATFORM_USER / PLATFORM_PASS no definidos. Se usará FIXED_API_TOKEN si existe.");
 }
@@ -616,8 +618,26 @@ function normalizeUsernameValue(text) {
     .toString()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9._-]/gi, '')
     .replace(/\s+/g, '')
     .toLowerCase();
+}
+
+function extractUsername(message) {
+  if (!message) return null;
+  const raw = message.toString();
+
+  const explicitMatch = /(?:usuario|user)\s*(?:es|:)?\s*@?([a-z0-9._-]+)/i.exec(raw);
+  if (explicitMatch?.[1]) return normalizeUsernameValue(explicitMatch[1]);
+
+  const normalized = normalizeUsernameValue(raw);
+  const teamMatch = normalized.match(TEAM_USER_PATTERN);
+  if (teamMatch) return teamMatch[0].toLowerCase();
+
+  const genericMatch = normalized.match(/[a-z]{3,}\d{3,}/i);
+  if (genericMatch) return genericMatch[0].toLowerCase();
+
+  return null;
 }
 
 function isNameQuestion(message) {
@@ -802,14 +822,14 @@ async function generateCasualChat(message, conversationId, context = {}) {
     return resp.data?.choices?.[0]?.message?.content;
   } catch (err) {
     await applyTypingDelay(message, conversationId);
-    return 'Hola! soy Cami, pasame tu usuario y te reviso el reintegro.';
+    return FALLBACK_HELP_MESSAGE;
   }
 }
 
 async function generateCheckResult(username, status, data = {}, conversationId) {
   if (status === 'success') {
     const bonusText = Number(data.bonus || 0).toFixed(2);
-    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}! Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
+    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}. Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
     await applyTypingDelay(successMessage, conversationId);
     return successMessage;
   }
@@ -887,19 +907,6 @@ function isValidUsername(text) {
   if (TEAM_USER_PATTERN.test(normalized)) return true;
   if (/[a-z]+\d{3,}$/i.test(normalized)) return true;
   return false;
-}
-
-function extractUsername(message) {
-  if (!message) return null;
-  const raw = message.trim();
-  const normalized = normalizeUsernameValue(raw);
-  const teamMatch = normalized.match(TEAM_USER_PATTERN);
-  if (teamMatch) return teamMatch[0].toLowerCase();
-  const explicit = /(?:usuario|user)(?:es)?\s*:?\s*@?([a-z0-9._-]+)/i.exec(normalized);
-  if (explicit) return explicit[1].toLowerCase();
-  const genericMatch = normalized.match(/[a-z]{3,}\d{3,}/i);
-  if (genericMatch) return genericMatch[0].toLowerCase();
-  return null;
 }
 
 function isForgotUsernameMessage(message) {
@@ -1031,7 +1038,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     }
 
     if (isWeeklyRefundQuestion(fullMessage)) {
-      await sendReplyToChatwoot(accountId, conversationId, 'El reembolso semanal se acredita lunes o martes y es aparte del reembolso diario. El diario se reclama por el día de ayer.');
+      await sendReplyToChatwoot(accountId, conversationId, 'El reembolso semanal se reclama por el WhatsApp principal de tu equipo. Acá solo gestionamos reembolsos diarios.');
       markReplied();
       return;
     }
@@ -1288,9 +1295,6 @@ async function processConversation(accountId, conversationId, contactId, contact
   if (usernameToCheck) {
     console.log(`⚡ Usuario detectado: ${usernameToCheck}`);
 
-    const claimedCheck = await checkClaimedToday(usernameToCheck);
-
-    // 2) Saldo actual
     const userInfo = await getUserInfoByName(usernameToCheck);
     if (!userInfo) {
       const reply = await generateCheckResult(usernameToCheck, 'api_error', {}, conversationId);
@@ -1308,7 +1312,8 @@ async function processConversation(accountId, conversationId, contactId, contact
       return;
     }
 
-    // 3) Neto de ayer
+    const claimedCheck = await checkClaimedToday(usernameToCheck);
+
     const result = await getUserNetYesterday(usernameToCheck);
     if (result.success) {
       const net = result.net;
@@ -1385,8 +1390,7 @@ async function processConversation(accountId, conversationId, contactId, contact
     return;
   }
 
-  const reply = await generateCasualChat(fullMessage, conversationId, { greeted: state.greeted, lastReason: state.lastReason });
-  await sendReplyToChatwoot(accountId, conversationId, reply);
+  await sendReplyToChatwoot(accountId, conversationId, FALLBACK_HELP_MESSAGE);
   markReplied();
 }
 
