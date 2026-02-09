@@ -583,6 +583,12 @@ async function sendReplyToChatwoot(accountId, conversationId, message) {
       message_type: 'outgoing',
       private: false
     }, { headers: { 'api_access_token': CHATWOOT_ACCESS_TOKEN } });
+
+    if (state) {
+      state.lastResponseAt = Date.now();
+      userStates.set(conversationId, state);
+    }
+
     console.log(`✅ Respuesta enviada.`);
   } catch (err) {
     console.error('❌ Error Chatwoot:', err.message);
@@ -854,7 +860,7 @@ async function generateCasualChat(message, conversationId, context = {}) {
 async function generateCheckResult(username, status, data = {}, conversationId) {
   if (status === 'success') {
     const bonusText = Number(data.bonus || 0).toFixed(2);
-    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}. Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
+    const successMessage = `¡Hola ${username}! Tu reembolso del día de ayer te lo acabamos de cargar en tu cuenta, tu reembolso es de $${bonusText}! Ya lo podés ver en la plataforma ${PLATFORM_URL}! Cualquier cosa, estoy por acá. ¡Suerte!`;
     await applyTypingDelay(successMessage, conversationId);
     return successMessage;
   }
@@ -954,7 +960,7 @@ async function processConversation(accountId, conversationId, contactId, contact
   console.log(`🤖 Msg: "${fullMessage}" | Contact: "${contactName}"`);
 
   const todayStr = getArgentinaDateString();
-  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, lastReasonNotified: null, lastReasonNotifiedAt: 0, pendingIntent: null, lastActivity: Date.now(), closed: false };
+  let state = userStates.get(conversationId) || { claimed: false, username: null, greeted: false, greetedDate: null, lastReason: null, lastReasonNotified: null, lastReasonNotifiedAt: 0, pendingIntent: null, lastActivity: Date.now(), closed: false, lastResponseAt: 0 };
   state.lastActivity = Date.now();
 
   if (state.greetedDate !== todayStr) {
@@ -1039,6 +1045,8 @@ async function processConversation(accountId, conversationId, contactId, contact
     !isBalanceQuestion(fullMessage) &&
     !isYesterdayTransfersQuestion(fullMessage)
   ) {
+    await sendReplyToChatwoot(accountId, conversationId, FALLBACK_HELP_MESSAGE);
+    markReplied();
     return;
   }
 
@@ -1463,8 +1471,13 @@ app.post('/webhook-chatwoot', (req, res) => {
     const fullText = buffer.messages.join(" . ");
     messageBuffer.delete(conversationId);
     (async () => {
-      console.log(`⏳ Procesando... (Conv ${conversationId})`);
-      await processConversation(accountId, conversationId, contactId, contactName, fullText);
+      try {
+        console.log(`⏳ Procesando... (Conv ${conversationId})`);
+        await processConversation(accountId, conversationId, contactId, contactName, fullText);
+      } catch (err) {
+        console.error('❌ Error en processConversation:', err?.message);
+        await sendReplyToChatwoot(accountId, conversationId, FALLBACK_HELP_MESSAGE);
+      }
     })();
   }, MESSAGE_BUFFER_DELAY_MS);
 });
