@@ -924,7 +924,7 @@ function cleanHtml(html) {
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const TEAM_USER_PATTERN = /\b(big|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
+const TEAM_USER_PATTERN = /\b(ato|arg|cir|mar|lux|zyr|met|tri|ign|roy|tig)[a-z._-]*\d{3,}\b/i;
 
 function isValidUsername(text) {
   if (!text) return false;
